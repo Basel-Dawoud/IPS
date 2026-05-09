@@ -1,0 +1,58 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.18
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/data:/mosquitto/data
+    restart: unless-stopped
+    networks:
+      - ips-network          # Declare that the mosquitto service is part of the ips-network. This allows it to communicate with other services on the same network, such as the server.
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ipsuser
+      POSTGRES_PASSWORD: ipspass
+      POSTGRES_DB: ipsdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ipsuser -d ipsdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - ips-network          # Declare that the postgres service is part of the ips-network. This allows it to communicate with other services on the same network, such as the server.
+
+  server:
+    build: ./server
+    environment:
+      MQTT_HOST: mosquitto
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ipsuser
+      POSTGRES_PASSWORD: ipspass
+      POSTGRES_DB: ipsdb
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      mosquitto:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ips-network          # Declare that the server service is part of the ips-network. This allows it to communicate with other services on the same network, such as the mosquitto broker and the postgres database.
+
+volumes:
+  postgres_data:
+
+networks:
+  ips-network:               # Declare a custom network called ips-network. This allows the services to communicate with each other using their service names as hostnames (e.g., the server can connect to the mosquitto broker using "mosquitto" as the hostname).
+    driver: bridge
