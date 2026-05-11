@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database
+*.db
+*.sqlite
+
+# Data files (large binaries)
+data/*.npy
+data/*.json
+
+# Outputs
+*.png
+*.mp3
+*.wav
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+# Readme +setup+env+md
+requirements.txt
+.env.example
+PROJECT_SUMMARY.md
+PROJECT_STRUCTURE.txt
+CHANGELOG.md
+README.md
+LICENSE
