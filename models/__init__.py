@@ -1,4 +1,4 @@
-"""Data models package."""
+"""Data models package ."""
 from .store import StoreMapper, RoomInfo
 from .product import ProductRecommender
 
