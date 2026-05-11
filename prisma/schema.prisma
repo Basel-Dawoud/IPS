@@ -1,0 +1,298 @@
+generator client {
+  provider        = "prisma-client"
+  previewFeatures = ["fullTextSearchPostgres"]
+  output          = "../src/generated/prisma"
+}
+
+generator dbml {
+  provider   = "prisma-dbml-generator"
+  output     = "../../GraduationProject/docs/diagrams"
+  outputName = "database-schema.dbml"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -------------------- Core structure --------------------
+
+model Building {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  floors                 Floor[]
+  beacons                BleBeacon[]
+  envModels              BleEnvModel[]
+  fingerprints           BleFingerprint[]
+  fingerprintSessions    FingerprintSession[]
+  aggregatedFingerprints AggregatedFingerprint[]
+  mapNodes               MapNode[]
+  pois                   Poi[]
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  measurements Measurement[]
+}
+
+model Floor {
+  id         String   @id @default(cuid())
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  level  Int // e.g. 0 = ground, 1 = first, etc.
+  name   String
+  mapUrl String? // URL to the floor plan image
+
+  // Reverse relations
+  // Note: Some relations are defined on the other side, but we can add them here for convenience if needed.
+  // For now, we rely on the building-level relations + floorLevel filtering, 
+  // or we can add specific relations if Prisma requires them for strict integrity.
+  // The user's schema didn't explicitly link Beacons to Floor *model*, just via integer level.
+  // We will keep it flexible as per suggestion.
+
+  @@unique([buildingId, level])
+}
+
+// -------------------- BLE beacons & models --------------------
+
+model BleBeacon {
+  id        String @id @default(cuid())
+  beaconUid String @unique // iBeacon UUID+major+minor or custom ID
+
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  floorLevel Int // reference to Floor.level
+  x          Float // local coords in meters
+  y          Float
+
+  txPowerDbm   Float? // nominal Tx power
+  refRssi1mDbm Float? // measured RSSI at 1 m after calibration
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buildingId, floorLevel])
+}
+
+model BleEnvModel {
+  id String @id @default(cuid())
+
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  floorLevel Int? // null = building default, or per floor
+
+  nExponent   Float // path-loss exponent
+  shadowSigma Float? // std dev of shadowing noise (optional)
+
+  lastCalibratedAt DateTime?
+
+  @@unique([buildingId, floorLevel])
+}
+
+// -------------------- Fingerprints --------------------
+
+// Session for grouping fingerprint collection runs
+model FingerprintSession {
+  id              String           @id @default(cuid())
+  building        Building         @relation(fields: [buildingId], references: [id])
+  buildingId      String
+  floorLevel      Int
+  name            String? // e.g. "Initial Survey", "Recalibration March 2025"
+  deviceModel     String? // Collection device info
+  collectorId     String? // Admin user ID
+  gridSpacing     Float            @default(1.0) // meters between collection points
+  pointDurationMs Int? // ms to scan at each collection point; null = app default
+  status          SessionStatus    @default(IN_PROGRESS)
+  startedAt       DateTime         @default(now())
+  completedAt     DateTime?
+  fingerprints    BleFingerprint[]
+
+  @@index([buildingId, floorLevel])
+}
+
+enum SessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ARCHIVED
+}
+
+model BleFingerprint {
+  id String @id @default(cuid())
+
+  building   Building            @relation(fields: [buildingId], references: [id])
+  buildingId String
+  session    FingerprintSession? @relation(fields: [sessionId], references: [id])
+  sessionId  String?
+
+  floorLevel Int
+  x          Float
+  y          Float
+
+  beaconUids String[] // ordered list of beacon IDs
+  rssis      Int[] // same length as beaconUids, IQR-filtered median RSSI in dBm
+
+  durationMs Int? // scan window length used to collect this sample
+
+  deviceModel String?
+  layoutTag   String? // e.g. "layout1", "layout2"
+  sampleIndex Int? // Which sample in group (e.g., 1-30 at same point)
+
+  rawReadings RawRssiReading[]
+
+  createdAt DateTime @default(now())
+
+  @@index([buildingId, floorLevel])
+  @@index([sessionId])
+}
+
+// Raw per-advertisement RSSI readings captured during a fingerprint scan window.
+// Kept for ML model training; positioning code uses BleFingerprint.rssis (median).
+model RawRssiReading {
+  id            String         @id @default(cuid())
+  fingerprint   BleFingerprint @relation(fields: [fingerprintId], references: [id], onDelete: Cascade)
+  fingerprintId String
+
+  // Denormalized from parent BleFingerprint for easy ML export (no join needed)
+  x Float
+  y Float
+
+  beaconUid  String
+  rssi       Int
+  capturedAt DateTime // absolute wall-clock timestamp of this advertisement
+
+  // Device orientation at the moment of capture (rad/s from gyroscope)
+  gyroX Float?
+  gyroY Float?
+  gyroZ Float?
+
+  @@index([fingerprintId])
+  @@index([beaconUid])
+  @@index([capturedAt])
+  @@index([x, y])
+}
+
+// Aggregated/averaged fingerprint per grid point for matching
+model AggregatedFingerprint {
+  id         String   @id @default(cuid())
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+  floorLevel Int
+  gridX      Float // Grid point X coordinate
+  gridY      Float // Grid point Y coordinate
+
+  beaconUids  String[] // Ordered beacon UIDs
+  rssiMeans   Float[] // Mean RSSI per beacon
+  rssiStdDevs Float[] // Std deviation per beacon (for filtering outliers)
+  sampleCount Int // Number of samples aggregated
+
+  sessionId String? // Which session produced this
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([buildingId, floorLevel, gridX, gridY])
+  @@index([buildingId, floorLevel])
+}
+
+model Measurement {
+  id String @id @default(cuid())
+
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  floorHint Int?
+  deviceId  String?
+  method    String? // "trilateration" | "fingerprint" | "hybrid"
+
+  beaconUids String[]
+  rssis      Int[]
+
+  estX      Float?
+  estY      Float?
+  estFloor  Int?
+  accuracyM Float?
+
+  createdAt DateTime @default(now())
+
+  @@index([buildingId, createdAt])
+}
+
+// -------------------- Indoor map & routing --------------------
+
+model MapNode {
+  id String @id @default(cuid())
+
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  floorLevel Int
+  x          Float
+  y          Float
+
+  type MapNodeType
+
+  poi   Poi?    @relation(fields: [poiId], references: [id])
+  poiId String?
+
+  edgesFrom MapEdge[] @relation("EdgesFrom")
+  edgesTo   MapEdge[] @relation("EdgesTo")
+
+  @@index([buildingId, floorLevel])
+}
+
+model MapEdge {
+  id String @id @default(cuid())
+
+  fromNode   MapNode @relation("EdgesFrom", fields: [fromNodeId], references: [id])
+  fromNodeId String
+
+  toNode   MapNode @relation("EdgesTo", fields: [toNodeId], references: [id])
+  toNodeId String
+
+  cost Float // distance, + floor-change penalty etc.
+
+  bidirectional Boolean @default(true)
+}
+
+enum MapNodeType {
+  CORRIDOR
+  ROOM_ENTRANCE
+  STAIRS
+  ELEVATOR
+}
+
+// -------------------- POIs (rooms, etc.) --------------------
+
+model Poi {
+  id String @id @default(cuid())
+
+  building   Building @relation(fields: [buildingId], references: [id])
+  buildingId String
+
+  floorLevel Int
+
+  name String
+  code String? // room number (e.g. "C3-305")
+  type PoiType
+
+  x Float
+  y Float
+
+  node MapNode[]
+
+  @@index([buildingId, floorLevel])
+}
+
+enum PoiType {
+  ROOM
+  LAB
+  TOILET
+  STAIRS
+  ELEVATOR
+  OTHER
+}
