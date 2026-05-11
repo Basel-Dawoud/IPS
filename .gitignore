@@ -46,7 +46,7 @@ data/*.json
 # OS
 .DS_Store
 Thumbs.db
-# Readme +setup+env+md
+# Readme +env+md
 requirements.txt
 .env.example
 PROJECT_SUMMARY.md
