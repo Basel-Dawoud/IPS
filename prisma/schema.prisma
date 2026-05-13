@@ -97,7 +97,8 @@ model BleEnvModel {
 
 // -------------------- Fingerprints --------------------
 
-// Session for grouping fingerprint collection runs
+/// One collection run for a building/floor. Groups every BleFingerprint
+/// and (transitively) every RawRssiReading captured during that run.
 model FingerprintSession {
   id              String           @id @default(cuid())
   building        Building         @relation(fields: [buildingId], references: [id])
@@ -122,6 +123,8 @@ enum SessionStatus {
   ARCHIVED
 }
 
+/// One scan window at one (x, y): the cleaned, IQR-median RSSI per beacon.
+/// This is what positioning (k-NN / fingerprint matching) consumes.
 model BleFingerprint {
   id String @id @default(cuid())
 
@@ -151,16 +154,24 @@ model BleFingerprint {
   @@index([sessionId])
 }
 
-// Raw per-advertisement RSSI readings captured during a fingerprint scan window.
-// Kept for ML model training; positioning code uses BleFingerprint.rssis (median).
+/// One BLE advertisement: a per-packet RSSI sample with timestamp and
+/// optional gyroscope. Kept for ML training (GP/GMM). Positioning code
+/// must not read this — use BleFingerprint.rssis (the IQR-median).
+///
+/// Window grouping: the mobile client collects one point as N sequential
+/// windows. Each window becomes one parent BleFingerprint (its `sampleIndex`
+/// is the 0-based window index within the point). `windowIndex` here is the
+/// same value, denormalized so ML exports can group/filter on it without
+/// joining BleFingerprint.
 model RawRssiReading {
   id            String         @id @default(cuid())
   fingerprint   BleFingerprint @relation(fields: [fingerprintId], references: [id], onDelete: Cascade)
   fingerprintId String
 
   // Denormalized from parent BleFingerprint for easy ML export (no join needed)
-  x Float
-  y Float
+  x           Float
+  y           Float
+  windowIndex Int   @default(0) // 0-based window index within the point
 
   beaconUid  String
   rssi       Int
@@ -175,9 +186,12 @@ model RawRssiReading {
   @@index([beaconUid])
   @@index([capturedAt])
   @@index([x, y])
+  @@index([fingerprintId, windowIndex])
 }
 
-// Aggregated/averaged fingerprint per grid point for matching
+/// The radio map: one row per (building, floor, gridX, gridY) with
+/// mean + stddev per beacon across every sample at that point. This is
+/// what live positioning matches against.
 model AggregatedFingerprint {
   id         String   @id @default(cuid())
   building   Building @relation(fields: [buildingId], references: [id])

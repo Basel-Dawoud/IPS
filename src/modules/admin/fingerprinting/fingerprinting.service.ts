@@ -135,6 +135,17 @@ export const deleteSession = async (id: string) => {
  * Batch upload fingerprints for a session
  * Each point can have multiple samples (e.g., 20-30 readings)
  */
+/**
+ * Persist a batch of collected points for one session.
+ *
+ * Per sample: one BleFingerprint row (cleaned IQR-median per beacon) plus
+ * one RawRssiReading row per advertisement. Done in a single transaction
+ * so a mid-upload failure leaves no partial point.
+ *
+ * Caller (controller) is responsible for filtering the beacon list to
+ * building-registered beacons before invoking this — uploaded payloads
+ * may contain neighbouring/foreign beacons.
+ */
 export const uploadFingerprints = async (data: BatchFingerprintInput) => {
   const session = await prisma.fingerprintSession.findUnique({
     where: { id: data.sessionId },
@@ -152,7 +163,10 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
 
   await prisma.$transaction(async (tx) => {
     for (const point of data.points) {
-      let sampleIndex = 0;
+      // Each sample = one collection window. windowIndex is the 0-based
+      // position within the point; we denormalize it onto every raw
+      // reading so ML pipelines can group by window without joining.
+      let windowIndex = 0;
       for (const sample of point.samples) {
         if (sample.beaconUids.length !== sample.rssis.length) {
           throw new Error(
@@ -171,7 +185,7 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
             rssis: sample.rssis,
             durationMs: sample.durationMs,
             deviceModel: data.deviceModel || session.deviceModel,
-            sampleIndex: sampleIndex++,
+            sampleIndex: windowIndex,
           },
         });
 
@@ -181,6 +195,7 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
               fingerprintId: fp.id,
               x: point.x,
               y: point.y,
+              windowIndex,
               beaconUid: r.beaconUid,
               rssi: r.rssi,
               capturedAt: new Date(r.capturedAt),
@@ -191,6 +206,7 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
           });
         }
 
+        windowIndex++;
         totalFingerprints++;
       }
     }
@@ -279,8 +295,13 @@ export const getFingerprintsBySession = async (
 };
 
 /**
- * Aggregate fingerprints into radio map points
- * Calculates mean and std deviation for each grid point
+ * Build the radio map for one session.
+ *
+ * Groups all BleFingerprint rows in the session by (x, y), then for each
+ * group computes per-beacon mean RSSI and population stddev across every
+ * sample at that point. Writes one AggregatedFingerprint per grid cell —
+ * (buildingId, floorLevel, gridX, gridY) is the unique key, so re-running
+ * after adding new points just updates existing rows.
  */
 export const aggregateFingerprints = async (
   sessionId: string
