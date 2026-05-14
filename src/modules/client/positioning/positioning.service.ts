@@ -162,7 +162,7 @@ async function calculatePositionByFingerprint(
     );
   }
 
-  const fingerprints: FingerprintVector[] = aggregatedFingerprints.map((af) => ({
+  const fingerprints: FingerprintVector[] = aggregatedFingerprints.map((af: any) => ({
     gridX: af.gridX,
     gridY: af.gridY,
     floorLevel: af.floorLevel,

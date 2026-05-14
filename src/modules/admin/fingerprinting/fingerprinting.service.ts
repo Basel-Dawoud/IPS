@@ -64,7 +64,7 @@ export const getSessionsByBuilding = async (
     orderBy: { startedAt: "desc" },
   });
 
-  return sessions.map((s) => ({
+  return sessions.map((s: any) => ({
     id: s.id,
     buildingId: s.buildingId,
     floorLevel: s.floorLevel,
@@ -161,7 +161,7 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
 
   let totalFingerprints = 0;
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: any) => {
     for (const point of data.points) {
       // Each sample = one collection window. windowIndex is the 0-based
       // position within the point; we denormalize it onto every raw
@@ -442,7 +442,7 @@ export const getRadioMap = async (
   return {
     buildingId,
     floorLevel,
-    points: aggregated.map((a) => ({
+    points: aggregated.map((a: any) => ({
       gridX: a.gridX,
       gridY: a.gridY,
       floorLevel: a.floorLevel,
@@ -470,7 +470,7 @@ export const exportFingerprintsCSV = async (sessionId: string): Promise<string> 
 
   const allBeacons = new Set<string>();
   for (const fp of fingerprints) {
-    fp.beaconUids.forEach((uid) => allBeacons.add(uid));
+    fp.beaconUids.forEach((uid: string) => allBeacons.add(uid));
   }
   const beaconList = Array.from(allBeacons).sort();
 
@@ -511,12 +511,12 @@ export const exportRawReadingsCSV = async (sessionId: string): Promise<string> =
     where: { sessionId },
     select: { id: true, floorLevel: true },
   });
-  const fpMap = new Map(fingerprints.map((f) => [f.id, f.floorLevel]));
+  const fpMap = new Map(fingerprints.map((f: any) => [f.id, f.floorLevel]));
 
   if (fingerprints.length === 0) return "";
 
   const raws = await prisma.rawRssiReading.findMany({
-    where: { fingerprintId: { in: fingerprints.map((f) => f.id) } },
+    where: { fingerprintId: { in: fingerprints.map((f: any) => f.id) } },
     orderBy: { capturedAt: "asc" },
   });
 
@@ -588,10 +588,10 @@ export const getSessionAnalytics = async (sessionId: string) => {
 
   const rawCounts = await prisma.rawRssiReading.groupBy({
     by: ["fingerprintId"],
-    where: { fingerprintId: { in: fingerprints.map((f) => f.id) } },
+    where: { fingerprintId: { in: fingerprints.map((f: any) => f.id) } },
     _count: true,
   });
-  const rawCountByFp = new Map(rawCounts.map((r) => [r.fingerprintId, r._count]));
+  const rawCountByFp = new Map<string, number>(rawCounts.map((r: any) => [r.fingerprintId, r._count]));
 
   for (const fp of fingerprints) {
     const key = `${fp.x},${fp.y}`;
@@ -607,7 +607,7 @@ export const getSessionAnalytics = async (sessionId: string) => {
     }
     const pt = pointMap.get(key)!;
     pt.sampleCount += 1;
-    pt.rawCount += rawCountByFp.get(fp.id) ?? 0;
+    pt.rawCount += (rawCountByFp.get(fp.id) as number) ?? 0;
     pt.samples.push({ id: fp.id, sampleIndex: fp.sampleIndex, createdAt: fp.createdAt });
 
     for (let i = 0; i < fp.beaconUids.length; i++) {
@@ -658,7 +658,7 @@ export const getSessionAnalytics = async (sessionId: string) => {
     totals: {
       uniquePoints: pointMap.size,
       totalSamples: fingerprints.length,
-      totalRawReadings: Array.from(rawCountByFp.values()).reduce((a, b) => a + b, 0),
+      totalRawReadings: Array.from(rawCountByFp.values()).reduce((a: number, b: number) => a + b, 0),
       uniqueBeacons: beaconCoverage.size,
     },
     points,
