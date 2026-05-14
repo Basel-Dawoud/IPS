@@ -1,3 +1,7 @@
+# Secrets
+.env
+
+# Python
 venv/
 __pycache__/
 *.pyc
@@ -5,5 +9,17 @@ __pycache__/
 *.pyd
 *.sqlite3
 *.swp
-.env
+
+# Device simulator state
+device_id.txt
+
+# Mosquitto persistent data
 mosquitto/data/
+device_id.txt
+mosquitto/data/mosquitto.db
+mosquitto/data/mosquitto.db-wal
+mosquitto/data/mosquitto.db-shm
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -3,41 +3,43 @@ services:
     image: eclipse-mosquitto:2.1.2-alpine
     ports:
       - "1883:1883"
+      # Optional advanced mode for browser MQTT access:
+      # - "9001:9001"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
       - ./mosquitto/data:/mosquitto/data
     restart: unless-stopped
     networks:
-      - ips-network          # Declare that the mosquitto service is part of the ips-network. This allows it to communicate with other services on the same network, such as the server.
+      - ips-network
 
   postgres:
-    image: postgres:16
+    image: timescale/timescaledb:2.27.0-pg16-oss
     environment:
-      POSTGRES_USER: ipsuser
-      POSTGRES_PASSWORD: ipspass
-      POSTGRES_DB: ipsdb
+      POSTGRES_USER: ${POSTGRES_USER:-ipsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ipspass}
+      POSTGRES_DB: ${POSTGRES_DB:-ipsdb}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ipsuser -d ipsdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ipsuser} -d ${POSTGRES_DB:-ipsdb}"]
       interval: 5s
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
-      - ips-network          # Declare that the postgres service is part of the ips-network. This allows it to communicate with other services on the same network, such as the server.
+      - ips-network
 
   server:
     build: ./server
     environment:
-      MQTT_HOST: mosquitto
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
       POSTGRES_HOST: postgres
-      POSTGRES_USER: ipsuser
-      POSTGRES_PASSWORD: ipspass
-      POSTGRES_DB: ipsdb
+      POSTGRES_USER: ${POSTGRES_USER:-ipsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ipspass}
+      POSTGRES_DB: ${POSTGRES_DB:-ipsdb}
       POSTGRES_PORT: 5432
     ports:
       - "8000:8000"
@@ -48,11 +50,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - ips-network          # Declare that the server service is part of the ips-network. This allows it to communicate with other services on the same network, such as the mosquitto broker and the postgres database.
+      - ips-network
 
 volumes:
   postgres_data:
 
 networks:
-  ips-network:               # Declare a custom network called ips-network. This allows the services to communicate with each other using their service names as hostnames (e.g., the server can connect to the mosquitto broker using "mosquitto" as the hostname).
+  ips-network:
     driver: bridge

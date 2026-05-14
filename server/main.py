@@ -62,6 +62,12 @@ async def mqtt_loop(): # main server event loop
                 await client.subscribe("ips/+/device/+/position") # Listen for all position updates
                 print("Subscribed to MQTT topic: ips/+/device/+/position") # Log message indicating that the server has successfully subscribed to the MQTT topic. This confirms that the server is now listening for position updates from devices.
 
+                await client.subscribe("ips/+/device/+/status") # Listen for device status updates (optional, for future use)
+                print("Subscribed to MQTT topic: ips/+/device/+/status") # Log message
+
+                await client.subscribe("ips/+/device/+/alert") # Listen for device alerts (optional, for future use)
+                print("Subscribed to MQTT topic: ips/+/device/+/alert") # Log message
+
                 async for message in client.messages: # This waits asynchronously for new MQTT messages.
                     try:
                         payload = message.payload.decode() # bytes -> string. MQTT payload arrives as bytes.

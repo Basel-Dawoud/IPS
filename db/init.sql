@@ -1,9 +1,24 @@
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+
 CREATE TABLE IF NOT EXISTS device_positions (
-    id          SERIAL PRIMARY KEY,
-    device_id   TEXT             NOT NULL,
-    building_id TEXT             NOT NULL,
-    floor       INT              NOT NULL,
+    ts          TIMESTAMPTZ NOT NULL,
+    id          BIGINT GENERATED ALWAYS AS IDENTITY,
+    device_id   TEXT NOT NULL,
+    building_id TEXT NOT NULL,
+    floor       INTEGER NOT NULL,
     x           DOUBLE PRECISION NOT NULL,
     y           DOUBLE PRECISION NOT NULL,
-    ts          TIMESTAMPTZ      NOT NULL
+    PRIMARY KEY (ts, id)
 );
+
+SELECT create_hypertable(
+    'device_positions',
+    'ts',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_positions_device_ts
+    ON device_positions (device_id, ts DESC);
+
+CREATE INDEX IF NOT EXISTS idx_device_positions_building_floor_ts
+    ON device_positions (building_id, floor, ts DESC);
