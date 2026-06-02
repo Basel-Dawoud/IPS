@@ -29,9 +29,37 @@ export const rawRssiReadingSchema = z.object({
   beaconUid: z.string().min(1),
   rssi: z.number().int(),
   capturedAt: z.string().datetime(), // ISO 8601 — converted to Date in service
+  // Gyroscope
   gyroX: z.number().optional(),
   gyroY: z.number().optional(),
   gyroZ: z.number().optional(),
+  // Raw accelerometer (g)
+  accelX: z.number().optional(),
+  accelY: z.number().optional(),
+  accelZ: z.number().optional(),
+  // Gravity-removed acceleration (m/s²)
+  userAccelX: z.number().optional(),
+  userAccelY: z.number().optional(),
+  userAccelZ: z.number().optional(),
+  // Magnetometer (µT)
+  magX: z.number().optional(),
+  magY: z.number().optional(),
+  magZ: z.number().optional(),
+  // Attitude (rad)
+  pitch: z.number().optional(),
+  roll: z.number().optional(),
+  yaw: z.number().optional(),
+  // Environmental
+  pressure: z.number().optional(),
+  relativeAltitude: z.number().optional(),
+});
+
+export const wifiReadingSchema = z.object({
+  bssid: z.string().min(1),
+  ssid: z.string().optional(),
+  rssi: z.number().int(),
+  frequencyMhz: z.number().int().optional(),
+  capturedAt: z.string().datetime(),
 });
 
 export const fingerprintSampleSchema = z
@@ -40,6 +68,7 @@ export const fingerprintSampleSchema = z
     rssis: z.array(z.number().int()),
     durationMs: z.number().int().min(SCAN_MS_MIN).max(SCAN_MS_MAX),
     rawReadings: z.array(rawRssiReadingSchema).min(1),
+    wifiReadings: z.array(wifiReadingSchema).optional(),
   })
   .refine((s) => s.beaconUids.length === s.rssis.length, {
     message: "beaconUids and rssis must have the same length",

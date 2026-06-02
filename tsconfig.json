@@ -13,8 +13,16 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "moduleResolution": "node"
+    "moduleResolution": "node",
+    "typeRoots": ["./node_modules/@types", "./src/types"]
   },
-  "include": ["src/**/*"],
+  "ts-node": {
+    // ts-node only loads files reached from the entry point by default,
+    // so global declaration files (like src/types/express.d.ts that
+    // augments Request with `user`) get skipped. `files: true` makes
+    // ts-node honor the `include`/`files` config like tsc does.
+    "files": true
+  },
+  "include": ["src/**/*", "src/types/**/*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

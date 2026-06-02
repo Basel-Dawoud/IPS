@@ -1,6 +1,12 @@
 import { Request, Response } from "express";
 import * as buildingService from "./buildings.service";
-import { sendSuccess, sendNotFound, sendServerError } from "../../../utils/response";
+import { nearbyQuerySchema } from "./buildings.schema";
+import {
+  sendSuccess,
+  sendNotFound,
+  sendServerError,
+  sendValidationError,
+} from "../../../utils/response";
 
 export const getBuildings = async (req: Request, res: Response) => {
   try {
@@ -21,5 +27,19 @@ export const getBuildingById = async (req: Request, res: Response) => {
     return sendSuccess(res, building);
   } catch (error) {
     return sendServerError(res, "Failed to fetch building");
+  }
+};
+
+export const getNearbyBuildings = async (req: Request, res: Response) => {
+  try {
+    const { lat, lng, radiusMeters } = nearbyQuerySchema.parse(req.query);
+    const rows = await buildingService.getNearbyBuildings(lat, lng, radiusMeters);
+    return sendSuccess(res, rows);
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return sendValidationError(res, error.errors);
+    }
+    console.error("[buildings/nearby] failed:", error);
+    return sendServerError(res, "Failed to fetch nearby buildings");
   }
 };

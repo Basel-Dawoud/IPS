@@ -199,9 +199,42 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
               beaconUid: r.beaconUid,
               rssi: r.rssi,
               capturedAt: new Date(r.capturedAt),
+              // Gyroscope
               gyroX: r.gyroX ?? null,
               gyroY: r.gyroY ?? null,
               gyroZ: r.gyroZ ?? null,
+              // Raw accelerometer
+              accelX: r.accelX ?? null,
+              accelY: r.accelY ?? null,
+              accelZ: r.accelZ ?? null,
+              // Gravity-removed acceleration
+              userAccelX: r.userAccelX ?? null,
+              userAccelY: r.userAccelY ?? null,
+              userAccelZ: r.userAccelZ ?? null,
+              // Magnetometer
+              magX: r.magX ?? null,
+              magY: r.magY ?? null,
+              magZ: r.magZ ?? null,
+              // Attitude
+              pitch: r.pitch ?? null,
+              roll: r.roll ?? null,
+              yaw: r.yaw ?? null,
+              // Environmental
+              pressure: r.pressure ?? null,
+              relativeAltitude: r.relativeAltitude ?? null,
+            })),
+          });
+        }
+
+        if (sample.wifiReadings && sample.wifiReadings.length > 0) {
+          await tx.wifiReading.createMany({
+            data: sample.wifiReadings.map((w) => ({
+              fingerprintId: fp.id,
+              bssid: w.bssid,
+              ssid: w.ssid ?? null,
+              rssi: w.rssi,
+              frequencyMhz: w.frequencyMhz ?? null,
+              capturedAt: new Date(w.capturedAt),
             })),
           });
         }
@@ -499,7 +532,20 @@ export const exportFingerprintsCSV = async (sessionId: string): Promise<string> 
 /**
  * Export per-advertisement RAW readings as CSV for ML training.
  * One row per BLE advertisement (no aggregation/filtering).
- * Columns: capturedAt, x, y, floorLevel, beaconUid, rssi, gyroX, gyroY, gyroZ, fingerprintId
+ *
+ * WiFi RSSI values are joined from WifiReading at the window level
+ * (fingerprintId) — every BLE ad in the same collection window gets the
+ * same WiFi columns. Each registered BSSID seen in the session becomes its
+ * own column: wifi_<bssid> (colons replaced with underscores).
+ * Empty = AP not detected in that window.
+ *
+ * Fixed columns:
+ *   fingerprintId, sessionId, x, y, floorLevel, windowIndex,
+ *   beaconUid, rssi, capturedAt,
+ *   gyroX/Y/Z, accelX/Y/Z, userAccelX/Y/Z, magX/Y/Z,
+ *   pitch, roll, yaw, pressure, relativeAltitude
+ * Dynamic columns (appended):
+ *   wifi_<bssid> ... (one per unique BSSID across the session)
  */
 export const exportRawReadingsCSV = async (sessionId: string): Promise<string> => {
   const session = await prisma.fingerprintSession.findUnique({
@@ -510,45 +556,218 @@ export const exportRawReadingsCSV = async (sessionId: string): Promise<string> =
   const fingerprints = await prisma.bleFingerprint.findMany({
     where: { sessionId },
     select: { id: true, floorLevel: true },
+    orderBy: [{ x: "asc" }, { y: "asc" }, { sampleIndex: "asc" }],
   });
-  const fpMap = new Map(fingerprints.map((f: any) => [f.id, f.floorLevel]));
 
   if (fingerprints.length === 0) return "";
 
-  const raws = await prisma.rawRssiReading.findMany({
-    where: { fingerprintId: { in: fingerprints.map((f: any) => f.id) } },
-    orderBy: { capturedAt: "asc" },
-  });
+  const fpIds = fingerprints.map((f: any) => f.id);
+
+  // fingerprintId → floorLevel
+  const fpFloorMap = new Map(fingerprints.map((f: any) => [f.id, f.floorLevel]));
+
+  // Fetch BLE raw readings and WiFi readings in parallel
+  const [raws, wifiReadings] = await Promise.all([
+    prisma.rawRssiReading.findMany({
+      where: { fingerprintId: { in: fpIds } },
+      orderBy: [{ x: "asc" }, { y: "asc" }, { windowIndex: "asc" }, { capturedAt: "asc" }],
+    }),
+    prisma.wifiReading.findMany({
+      where: { fingerprintId: { in: fpIds } },
+    }),
+  ]);
+
+  // Build: fingerprintId → Map<bssid, rssi>
+  // Multiple readings per BSSID per window are averaged (shouldn't normally
+  // happen, but guards against duplicate inserts).
+  const wifiByFp = new Map<string, Map<string, number[]>>();
+  for (const w of wifiReadings) {
+    if (!wifiByFp.has(w.fingerprintId)) {
+      wifiByFp.set(w.fingerprintId, new Map());
+    }
+    const bMap = wifiByFp.get(w.fingerprintId)!;
+    if (!bMap.has(w.bssid)) bMap.set(w.bssid, []);
+    bMap.get(w.bssid)!.push(w.rssi);
+  }
+
+  // Collect all unique BSSIDs across the session, sorted for stable columns
+  const allBssids = Array.from(
+    new Set(wifiReadings.map((w) => w.bssid))
+  ).sort();
+
+  // Column header: wifi_aa_bb_cc_dd_ee_ff (colons → underscores)
+  const wifiHeaders = allBssids.map((b) => `wifi_${b.replace(/:/g, "_")}`);
+
+  const n = (v: number | null | undefined): string =>
+    v == null ? "" : String(v);
 
   const headers = [
-    "capturedAt",
+    "fingerprintId",
+    "sessionId",
     "x",
     "y",
     "floorLevel",
+    "windowIndex",
     "beaconUid",
     "rssi",
-    "gyroX",
-    "gyroY",
-    "gyroZ",
-    "fingerprintId",
+    "capturedAt",
+    // Gyroscope
+    "gyroX", "gyroY", "gyroZ",
+    // Raw accelerometer (g)
+    "accelX", "accelY", "accelZ",
+    // Gravity-removed acceleration (m/s²)
+    "userAccelX", "userAccelY", "userAccelZ",
+    // Magnetometer (µT)
+    "magX", "magY", "magZ",
+    // Attitude (rad)
+    "pitch", "roll", "yaw",
+    // Environmental
+    "pressure", "relativeAltitude",
+    // WiFi RSSI — one column per unique BSSID in the session
+    ...wifiHeaders,
   ];
+
   const rows = [headers.join(",")];
+
   for (const r of raws) {
+    // Look up WiFi readings for this fingerprint window
+    const bMap = wifiByFp.get(r.fingerprintId);
+    const wifiValues = allBssids.map((bssid) => {
+      if (!bMap) return "";
+      const vals = bMap.get(bssid);
+      if (!vals || vals.length === 0) return "";
+      // Average in case of duplicates; round to 1 decimal
+      return (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1);
+    });
+
     rows.push(
       [
-        r.capturedAt.toISOString(),
+        r.fingerprintId,
+        sessionId,
         r.x,
         r.y,
-        fpMap.get(r.fingerprintId) ?? "",
+        fpFloorMap.get(r.fingerprintId) ?? "",
+        r.windowIndex ?? "",
         r.beaconUid,
         r.rssi,
-        r.gyroX ?? "",
-        r.gyroY ?? "",
-        r.gyroZ ?? "",
-        r.fingerprintId,
+        r.capturedAt.toISOString(),
+        // Gyroscope
+        n(r.gyroX), n(r.gyroY), n(r.gyroZ),
+        // Raw accelerometer
+        n(r.accelX), n(r.accelY), n(r.accelZ),
+        // User (gravity-removed) acceleration
+        n(r.userAccelX), n(r.userAccelY), n(r.userAccelZ),
+        // Magnetometer
+        n(r.magX), n(r.magY), n(r.magZ),
+        // Attitude
+        n(r.pitch), n(r.roll), n(r.yaw),
+        // Environmental
+        n(r.pressure), n(r.relativeAltitude),
+        // WiFi RSSI columns (window-level, repeated for every BLE ad in the window)
+        ...wifiValues,
       ].join(",")
     );
   }
+
+  return rows.join("\n");
+};
+
+/**
+ * Export per-window WiFi RSSI readings as CSV for ML training.
+ * One row per registered-AP reading captured during a collection window.
+ *
+ * Columns:
+ *   fingerprintId, sessionId, x, y, floorLevel, windowIndex,
+ *   bssid, ssid, rssi, frequencyMhz, capturedAt
+ *
+ * Note: WiFi readings are stored at per-window granularity (one scan per
+ * BleFingerprint window), not per-advertisement like BLE raw readings.
+ * Join on fingerprintId + windowIndex to align with BLE raw export.
+ */
+export const exportWifiReadingsCSV = async (sessionId: string): Promise<string> => {
+  const session = await prisma.fingerprintSession.findUnique({
+    where: { id: sessionId },
+  });
+  if (!session) throw new Error("Session not found");
+
+  const fingerprints = await prisma.bleFingerprint.findMany({
+    where: { sessionId },
+    select: { id: true, x: true, y: true, floorLevel: true, sampleIndex: true },
+    orderBy: [{ x: "asc" }, { y: "asc" }, { sampleIndex: "asc" }],
+  });
+
+  if (fingerprints.length === 0) return "";
+
+  // Map fingerprintId -> { x, y, floorLevel, windowIndex }
+  const fpMeta = new Map(
+    fingerprints.map((f: any) => [
+      f.id,
+      { x: f.x, y: f.y, floorLevel: f.floorLevel, windowIndex: f.sampleIndex ?? 0 },
+    ])
+  );
+
+  const wifiReadings = await prisma.wifiReading.findMany({
+    where: { fingerprintId: { in: fingerprints.map((f: any) => f.id) } },
+    orderBy: [{ fingerprintId: "asc" }, { capturedAt: "asc" }],
+  });
+
+  if (wifiReadings.length === 0) {
+    // Return headers-only so the caller knows the schema even when no data
+    return [
+      "fingerprintId",
+      "sessionId",
+      "x",
+      "y",
+      "floorLevel",
+      "windowIndex",
+      "bssid",
+      "ssid",
+      "rssi",
+      "frequencyMhz",
+      "capturedAt",
+    ].join(",");
+  }
+
+  const headers = [
+    "fingerprintId",
+    "sessionId",
+    "x",
+    "y",
+    "floorLevel",
+    "windowIndex",
+    "bssid",
+    "ssid",
+    "rssi",
+    "frequencyMhz",
+    "capturedAt",
+  ];
+
+  const rows = [headers.join(",")];
+
+  const n = (v: number | null | undefined): string =>
+    v == null ? "" : String(v);
+  const s = (v: string | null | undefined): string =>
+    v == null ? "" : v.replace(/,/g, ";"); // escape commas in SSID/BSSID strings
+
+  for (const w of wifiReadings) {
+    const meta = fpMeta.get(w.fingerprintId);
+    rows.push(
+      [
+        w.fingerprintId,
+        sessionId,
+        meta?.x ?? "",
+        meta?.y ?? "",
+        meta?.floorLevel ?? "",
+        meta?.windowIndex ?? "",
+        s(w.bssid),
+        s(w.ssid),
+        w.rssi,
+        n(w.frequencyMhz),
+        w.capturedAt.toISOString(),
+      ].join(",")
+    );
+  }
+
   return rows.join("\n");
 };
 

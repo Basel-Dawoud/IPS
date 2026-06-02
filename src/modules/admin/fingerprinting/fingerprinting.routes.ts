@@ -29,6 +29,8 @@ router.get("/session/:id/export", FingerprintingController.exportFingerprints);
 
 router.get("/session/:id/export-raw", FingerprintingController.exportRawReadings);
 
+router.get("/session/:id/export-wifi", FingerprintingController.exportWifiReadings);
+
 router.delete("/session/:id/point", FingerprintingController.deleteSessionPoint);
 
 router.delete("/session/:id/fingerprint/:fingerprintId", FingerprintingController.deleteFingerprint);

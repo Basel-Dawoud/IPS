@@ -19,9 +19,37 @@ export interface RawRssiReading {
   beaconUid: string;
   rssi: number;
   capturedAt: string; // ISO 8601 string from client — converted to Date when stored
+  // Gyroscope
   gyroX?: number;
   gyroY?: number;
   gyroZ?: number;
+  // Raw accelerometer (g)
+  accelX?: number;
+  accelY?: number;
+  accelZ?: number;
+  // Gravity-removed acceleration (m/s²)
+  userAccelX?: number;
+  userAccelY?: number;
+  userAccelZ?: number;
+  // Magnetometer (µT)
+  magX?: number;
+  magY?: number;
+  magZ?: number;
+  // Attitude (rad)
+  pitch?: number;
+  roll?: number;
+  yaw?: number;
+  // Environmental
+  pressure?: number;
+  relativeAltitude?: number;
+}
+
+export interface WifiReading {
+  bssid: string;
+  ssid?: string;
+  rssi: number;
+  frequencyMhz?: number;
+  capturedAt: string;
 }
 
 export interface FingerprintSample {
@@ -29,6 +57,7 @@ export interface FingerprintSample {
   rssis: number[];
   durationMs: number;
   rawReadings: RawRssiReading[];
+  wifiReadings?: WifiReading[];
 }
 
 export interface CollectionPoint {

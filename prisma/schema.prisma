@@ -22,6 +22,12 @@ model Building {
   name        String
   description String?
 
+  // Geofence — set/maintained via raw SQL (PostGIS). `zone` is the polygon a
+  // user must enter to be considered "at" the building; `centroid` is used
+  // for distance ordering when they're nearby but not yet inside.
+  zone     Unsupported("geometry(Polygon, 4326)")?
+  centroid Unsupported("geometry(Point, 4326)")?
+
   floors                 Floor[]
   beacons                BleBeacon[]
   envModels              BleEnvModel[]
@@ -30,6 +36,7 @@ model Building {
   aggregatedFingerprints AggregatedFingerprint[]
   mapNodes               MapNode[]
   pois                   Poi[]
+  wifiAccessPoints       WifiAccessPoint[]
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -146,7 +153,8 @@ model BleFingerprint {
   layoutTag   String? // e.g. "layout1", "layout2"
   sampleIndex Int? // Which sample in group (e.g., 1-30 at same point)
 
-  rawReadings RawRssiReading[]
+  rawReadings  RawRssiReading[]
+  wifiReadings WifiReading[]
 
   createdAt DateTime @default(now())
 
@@ -177,16 +185,77 @@ model RawRssiReading {
   rssi       Int
   capturedAt DateTime // absolute wall-clock timestamp of this advertisement
 
-  // Device orientation at the moment of capture (rad/s from gyroscope)
+  // Gyroscope — rotation rate (rad/s)
   gyroX Float?
   gyroY Float?
   gyroZ Float?
+
+  // Raw accelerometer including gravity (g)
+  accelX Float?
+  accelY Float?
+  accelZ Float?
+
+  // Gravity-removed acceleration from DeviceMotion (m/s²)
+  userAccelX Float?
+  userAccelY Float?
+  userAccelZ Float?
+
+  // Magnetometer — raw geomagnetic field (µT)
+  magX Float?
+  magY Float?
+  magZ Float?
+
+  // Attitude from OS-fused DeviceMotion (rad)
+  pitch Float?
+  roll  Float?
+  yaw   Float?
+
+  // Environmental
+  pressure         Float? // barometer (hPa)
+  relativeAltitude Float? // iOS only (m)
 
   @@index([fingerprintId])
   @@index([beaconUid])
   @@index([capturedAt])
   @@index([x, y])
   @@index([fingerprintId, windowIndex])
+}
+
+/// Registered WiFi access points for a building. Admin-managed — mirrors BleBeacon.
+/// Only APs in this table will have their RSSI recorded during fingerprinting.
+model WifiAccessPoint {
+  id          String   @id @default(cuid())
+  building    Building @relation(fields: [buildingId], references: [id])
+  buildingId  String
+
+  bssid       String  // MAC address — unique per building
+  ssid        String? // display name (not unique — informational only)
+  description String?
+  floorLevel  Int?    // null = visible on all floors
+  active      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([buildingId, bssid])
+  @@index([buildingId])
+}
+
+/// Per-fingerprint-window WiFi scan results (only registered APs).
+/// One-shot scan per collection window; cascade-deletes with its parent BleFingerprint.
+model WifiReading {
+  id            String         @id @default(cuid())
+  fingerprint   BleFingerprint @relation(fields: [fingerprintId], references: [id], onDelete: Cascade)
+  fingerprintId String
+
+  bssid        String
+  ssid         String?
+  rssi         Int
+  frequencyMhz Int?
+  capturedAt   DateTime
+
+  @@index([fingerprintId])
+  @@index([bssid])
 }
 
 /// The radio map: one row per (building, floor, gridX, gridY) with
@@ -309,4 +378,244 @@ enum PoiType {
   STAIRS
   ELEVATOR
   OTHER
+}
+
+// -------------------- Auth --------------------
+
+/// A registered Navimind user. May be linked to multiple Identity rows
+/// (one per OAuth provider). Email is optional because Apple may relay a
+/// hidden "private relay" address that the user can revoke later.
+model User {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  name      String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identities Identity[]
+}
+
+enum AuthProvider {
+  GOOGLE
+  APPLE
+}
+
+/// One row per (provider, user-on-that-provider) link. The (provider,
+/// providerUserId) pair is the unique sign-in key — `providerUserId` is
+/// the `sub` claim from Google/Apple ID tokens.
+model Identity {
+  id             String       @id @default(cuid())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  provider       AuthProvider
+  providerUserId String
+  createdAt      DateTime     @default(now())
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+}
+
+// -------------------- Trajectory-based fingerprinting (collection only) --------------------
+//
+// Parallel pipeline to the point-based BleFingerprint flow above. We persist
+// raw walks (continuous IMU + BLE + WiFi streams plus on-device step events)
+// so a downstream ML team can train sequence models without us locking them
+// into a particular segmentation or labelling strategy.
+//
+// Isolated from the existing fingerprint tables: `buildingId` is stored as a
+// plain string with the FK enforced only in raw SQL (see migration), so this
+// section adds no fields/relations to Building, Floor, or any existing model.
+
+model TrajectorySession {
+  id           String                @id @default(cuid())
+  buildingId   String
+  floorLevel   Int
+  name         String?
+  deviceModel  String?
+  collectorId  String?
+  notes        String?
+  status       SessionStatus         @default(IN_PROGRESS)
+  startedAt    DateTime              @default(now())
+  completedAt  DateTime?
+
+  // Environment versioning + capture conditions (B4). All nullable so the AI
+  // team can stratify the dataset by map/layout revision and by ambient state
+  // (a fingerprint collected in a crowded hall at rush hour decays differently
+  // from an empty one). Versions are free-running ints the collector bumps when
+  // the floor plan or beacon layout changes.
+  buildingVersion     Int?
+  beaconLayoutVersion Int?
+  timeOfDay           String?   // MORNING | MIDDAY | EVENING | NIGHT (free text)
+  crowdLevel          String?   // EMPTY | LIGHT | MODERATE | CROWDED (free text)
+
+  // Carry mode + device pose (B5) — body shadowing & stride dynamics depend on
+  // how the phone is held. Session-level defaults; recorder may also stamp the
+  // walk. phoneAttitude is a coarse descriptor (PORTRAIT/FLAT/...).
+  carryMode     String?   // HAND | SWING | POCKET | BACKPACK
+  phoneAttitude String?
+
+  walks        TrajectoryWalk[]
+
+  @@index([buildingId, floorLevel])
+}
+
+/// One continuous walk from a start waypoint (startX, startY) to an end
+/// waypoint (endX, endY). `totalSteps` is the on-device step count between
+/// the two taps; the server uses it to linearly interpolate a per-step (x, y)
+/// label on the line segment.
+model TrajectoryWalk {
+  id          String              @id @default(cuid())
+  session     TrajectorySession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId   String
+  buildingId  String
+  floorLevel  Int
+  startX      Float
+  startY      Float
+  endX        Float
+  endY        Float
+  startedAt   DateTime
+  endedAt     DateTime
+  totalSteps  Int
+  deviceModel String?
+  createdAt   DateTime            @default(now())
+
+  // Idempotency (B6): device-generated UUID per walk. uploadWalks() skips a
+  // walk whose (sessionId, clientId) already exists so retries after a flaky
+  // upload don't duplicate. Nullable for legacy rows.
+  clientId    String?
+
+  // Replay clock anchor (B1): wall-clock ms (Date.now()) captured at walk
+  // start. Per-sample absolute time = clockEpochMs + tMs. The relative tMs on
+  // each child row comes from a monotonic clock so it is immune to wall-clock
+  // jumps mid-walk; clockEpochMs only maps the walk onto the calendar.
+  clockEpochMs Float?
+
+  // Sensor metadata (B5): the IMU sampling rate actually used and whether the
+  // magnetometer was calibrated (Expo's magnetometer is uncalibrated → usually
+  // null/false). Walk-level so mixed-device sessions stay analyzable.
+  imuRateHz     Int?
+  magCalibrated Boolean?
+
+  steps       TrajectoryStepEvent[]
+  imuSamples  TrajectoryImuSample[]
+  bleReadings TrajectoryBleReading[]
+  wifiReadings TrajectoryWifiReading[]
+  checkpoints TrajectoryCheckpoint[]
+
+  @@unique([sessionId, clientId])
+  @@index([sessionId])
+  @@index([buildingId, floorLevel])
+}
+
+/// Intermediate ground-truth waypoint marked mid-walk (B2). The collector taps
+/// "Mark checkpoint" when physically at a known (x, y); the server uses these
+/// plus the start/end anchors to build a piecewise-linear time→position label,
+/// so curved/non-uniform walks are labelled correctly (vs. the old straight-line
+/// stepIndex/totalSteps assumption). `seq` orders them within the walk; `tMs` is
+/// the same monotonic-relative clock as the IMU/BLE rows.
+model TrajectoryCheckpoint {
+  id         String         @id @default(cuid())
+  walk       TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId     String
+
+  seq        Int
+  x          Float
+  y          Float
+  tMs        Float
+  capturedAt DateTime
+
+  @@index([walkId, seq])
+}
+
+/// One footstep detected on-device (peak-valley detector). `interpolatedX/Y`
+/// is the server-computed label = start + (stepIndex / totalSteps) * (end - start).
+model TrajectoryStepEvent {
+  id             String          @id @default(cuid())
+  walk           TrajectoryWalk  @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId         String
+
+  stepIndex      Int             // 0-based within walk
+  capturedAt     DateTime
+  tMs            Float?          // monotonic ms since walk start (B1) — replay clock
+  headingRad     Float           // device heading at the moment the step fired
+  interpolatedX  Float           // server-computed waypoint-anchored label
+  interpolatedY  Float
+
+  @@index([walkId, stepIndex])
+}
+
+/// Raw IMU stream at ~20 Hz. Column shape mirrors RawRssiReading's IMU columns
+/// for AI-team familiarity. All sensor fields nullable — not every device emits
+/// every channel.
+model TrajectoryImuSample {
+  id         String         @id @default(cuid())
+  walk       TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId     String
+
+  capturedAt DateTime
+  tMs        Float?  // monotonic ms since walk start (B1) — replay clock
+
+  // Gyroscope (rad/s)
+  gyroX Float?
+  gyroY Float?
+  gyroZ Float?
+
+  // Raw accelerometer including gravity (g)
+  accelX Float?
+  accelY Float?
+  accelZ Float?
+
+  // Gravity-removed acceleration (m/s²)
+  userAccelX Float?
+  userAccelY Float?
+  userAccelZ Float?
+
+  // Magnetometer (µT)
+  magX Float?
+  magY Float?
+  magZ Float?
+
+  // Attitude from OS-fused DeviceMotion (rad)
+  pitch Float?
+  roll  Float?
+  yaw   Float?
+
+  // Environmental
+  pressure         Float?
+  relativeAltitude Float?
+
+  @@index([walkId, capturedAt])
+}
+
+/// One BLE advertisement captured during the walk.
+model TrajectoryBleReading {
+  id         String         @id @default(cuid())
+  walk       TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId     String
+
+  capturedAt DateTime
+  tMs        Float?  // monotonic ms since walk start (B1) — replay clock
+  beaconUid  String
+  rssi       Int
+
+  @@index([walkId, capturedAt])
+  @@index([walkId, beaconUid])
+}
+
+/// One WiFi scan entry captured during the walk.
+model TrajectoryWifiReading {
+  id           String         @id @default(cuid())
+  walk         TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId       String
+
+  capturedAt   DateTime
+  tMs          Float?  // monotonic ms since walk start (B1) — replay clock
+  bssid        String
+  ssid         String?
+  rssi         Int
+  frequencyMhz Int?
+
+  @@index([walkId, capturedAt])
+  @@index([walkId, bssid])
 }

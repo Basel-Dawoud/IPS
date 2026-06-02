@@ -166,6 +166,18 @@ export const getRadioMap = async (req: Request, res: Response, next: NextFunctio
   }
 };
 
+/**
+ * Converts a session name (or fallback string) into a safe filename stem.
+ * e.g. "Hallway A — Floor 2!" → "hallway-a-floor-2"
+ */
+function toFileStem(name: string | null | undefined, fallback: string): string {
+  const base = (name && name.trim()) ? name.trim() : fallback;
+  return base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-") // replace any run of non-alphanumeric with a dash
+    .replace(/^-+|-+$/g, "");    // strip leading/trailing dashes
+}
+
 export const exportFingerprints = async (
   req: Request,
   res: Response,
@@ -173,10 +185,17 @@ export const exportFingerprints = async (
 ) => {
   try {
     const { id } = req.params;
-    const csv = await FingerprintingService.exportFingerprintsCSV(id);
+    const [csv, session] = await Promise.all([
+      FingerprintingService.exportFingerprintsCSV(id),
+      FingerprintingService.getSessionById(id),
+    ]);
+
+    const stem = toFileStem(session?.name, "session");
+    const shortId = id.slice(0, 8);
+    const filename = `fingerprints-${stem}-${shortId}.csv`;
 
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", `attachment; filename=fingerprints-${id}.csv`);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(csv);
   } catch (error) {
     next(error);
@@ -190,12 +209,41 @@ export const exportRawReadings = async (
 ) => {
   try {
     const { id } = req.params;
-    const csv = await FingerprintingService.exportRawReadingsCSV(id);
+    const [csv, session] = await Promise.all([
+      FingerprintingService.exportRawReadingsCSV(id),
+      FingerprintingService.getSessionById(id),
+    ]);
+
+    const stem = toFileStem(session?.name, "session");
+    const shortId = id.slice(0, 8);
+    const filename = `raw-readings-${stem}-${shortId}.csv`;
+
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=raw-readings-${id}.csv`
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const exportWifiReadings = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const [csv, session] = await Promise.all([
+      FingerprintingService.exportWifiReadingsCSV(id),
+      FingerprintingService.getSessionById(id),
+    ]);
+
+    const stem = toFileStem(session?.name, "session");
+    const shortId = id.slice(0, 8);
+    const filename = `wifi-readings-${stem}-${shortId}.csv`;
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(csv);
   } catch (error) {
     next(error);

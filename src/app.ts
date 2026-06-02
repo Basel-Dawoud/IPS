@@ -22,8 +22,14 @@ import clientPositioningRoutes from "./modules/client/positioning/positioning.ro
 import adminMapRoutes from "./modules/admin/map/map.routes";
 import clientNavigationRoutes from "./modules/client/navigation/navigation.routes";
 import adminFingerprintingRoutes from "./modules/admin/fingerprinting/fingerprinting.routes";
+import adminTrajectoryRoutes from "./modules/admin/trajectory/trajectory.routes";
+import adminWifiApRoutes from "./modules/admin/wifi-aps/wifi-aps.routes";
+import authRoutes from "./modules/auth/auth.routes";
+import { optionalAuth } from "./middleware/optional-auth";
 
+app.use(optionalAuth);
 
+app.use("/api/auth", authRoutes);
 app.use("/api/admin/buildings", adminBuildingRoutes);
 app.use("/api/client/buildings", clientBuildingRoutes);
 app.use("/api/admin/floors", adminFloorRoutes);
@@ -33,14 +39,18 @@ app.use("/api/client/positioning", clientPositioningRoutes);
 app.use("/api/admin/map", adminMapRoutes);
 app.use("/api/client/navigation", clientNavigationRoutes);
 app.use("/api/admin/fingerprinting", adminFingerprintingRoutes);
+app.use("/api/admin/trajectory", adminTrajectoryRoutes);
+app.use("/api/admin/wifi-aps", adminWifiApRoutes);
 
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error("Unhandled error:", err.message);
-  res.status(err.status || 500).json({
-    success: false,
-    error: err.message || "Internal server error",
-  });
-});
+app.use(
+  (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Unhandled error:", err.message);
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message || "Internal server error",
+    });
+  },
+);
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
