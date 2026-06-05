@@ -66,7 +66,12 @@ model Floor {
 
 model BleBeacon {
   id        String @id @default(cuid())
-  beaconUid String @unique // iBeacon UUID+major+minor or custom ID
+  beaconUid String @unique // iBeacon UUID+major+minor or custom ID (the ML model identity)
+
+  // 0xFFF0 service-data hex (lowercased). Both Android & iOS read this from the
+  // advertisement (iOS hides the iBeacon manufacturer data but NOT service data),
+  // so it is the cross-platform key: iOS scans 0xFFF0 -> looks up beaconUid.
+  serviceData String?
 
   building   Building @relation(fields: [buildingId], references: [id])
   buildingId String

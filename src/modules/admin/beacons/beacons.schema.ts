@@ -8,6 +8,7 @@ export const createBeaconSchema = z.object({
   y: z.number(),
   txPowerDbm: z.number().optional(),
   refRssi1mDbm: z.number().optional(),
+  serviceData: z.string().optional(), // 0xFFF0 service-data hex (cross-platform key)
 });
 
 export const updateBeaconSchema = z.object({
@@ -18,4 +19,5 @@ export const updateBeaconSchema = z.object({
   txPowerDbm: z.number().optional(),
   refRssi1mDbm: z.number().optional(),
   active: z.boolean().optional(),
+  serviceData: z.string().optional(), // link a beacon's iOS-readable 0xFFF0 value
 });

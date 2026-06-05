@@ -6,6 +6,7 @@ export interface CreateBeaconInput {
   y: number;
   txPowerDbm?: number;
   refRssi1mDbm?: number;
+  serviceData?: string;
 }
 
 export interface UpdateBeaconInput {
@@ -16,4 +17,5 @@ export interface UpdateBeaconInput {
   txPowerDbm?: number;
   refRssi1mDbm?: number;
   active?: boolean;
+  serviceData?: string;
 }
