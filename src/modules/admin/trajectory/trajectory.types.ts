@@ -36,6 +36,18 @@ export interface TrajectoryCheckpointInput {
   capturedAt: string;
 }
 
+/**
+ * A stationary pause marked mid-walk (Pause → Resume). Freezes ONLY the
+ * ground-truth label across [pauseTMs, resumeTMs] (sensors keep recording).
+ * `resumeTMs` omitted ⇒ the walk ended while still paused; the server closes
+ * the interval at the walk's endedAt.
+ */
+export interface PauseMarker {
+  seq: number;
+  pauseTMs: number;
+  resumeTMs?: number;
+}
+
 export interface TrajectoryImuSampleInput {
   capturedAt: string;
   tMs?: number; // monotonic ms since walk start (B1)
@@ -56,6 +68,12 @@ export interface TrajectoryImuSampleInput {
   yaw?: number;
   pressure?: number;
   relativeAltitude?: number;
+  // On-device gait-detector state at this sample (optional; legacy clients omit).
+  vertAccel?: number;
+  gaitVerticality?: number;
+  gaitEnergy?: number;
+  gaitIsWalking?: boolean;
+  gaitAmplitude?: number;
 }
 
 export interface TrajectoryBleReadingInput {
@@ -95,6 +113,8 @@ export interface TrajectoryWalkInput {
   wifi?: TrajectoryWifiReadingInput[];
   // B2 checkpoint waypoints → piecewise-linear ground truth
   checkpoints?: TrajectoryCheckpointInput[];
+  // Stop/pause markers → hold ground-truth label across each [pauseTMs, resumeTMs].
+  pauses?: PauseMarker[];
 }
 
 export interface UploadWalksInput {
@@ -109,8 +129,11 @@ export interface UploadWalksResult {
   stepsCreated: number;
   imuSamplesCreated: number;
   bleReadingsCreated: number;
+  /** Readings dropped because their beaconUid isn't registered to the session's building. */
+  bleReadingsDroppedUnknownBeacon: number;
   wifiReadingsCreated: number;
   checkpointsCreated: number;
+  pausesCreated: number;
 }
 
 export interface TrajectorySessionWithStats {

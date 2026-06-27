@@ -507,10 +507,31 @@ model TrajectoryWalk {
   bleReadings TrajectoryBleReading[]
   wifiReadings TrajectoryWifiReading[]
   checkpoints TrajectoryCheckpoint[]
+  pauseEvents TrajectoryPauseEvent[]
 
   @@unique([sessionId, clientId])
   @@index([sessionId])
   @@index([buildingId, floorLevel])
+}
+
+/// A stationary pause the collector marked mid-walk (Pause → Resume). A pause
+/// freezes ONLY the ground-truth position label: the server holds (x, y)
+/// constant across [pauseTMs, resumeTMs] by injecting two co-located anchors
+/// into the polyline, instead of linearly interpolating through the stop.
+/// IMPORTANT: every sensor stream keeps recording at full cadence during the
+/// pause — stationary IMU/BLE/mag/pressure data characterizes true-still noise
+/// and is kept, never dropped. `resumeTMs` is null only if the walk ended while
+/// still paused (the server then closes the interval at endedAt).
+model TrajectoryPauseEvent {
+  id        String         @id @default(cuid())
+  walk      TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
+  walkId    String
+
+  seq       Int    // 0-based pause order within the walk
+  pauseTMs  Float  // monotonic ms from walk start when user pressed Pause
+  resumeTMs Float? // monotonic ms when user pressed Resume (null = ended while paused)
+
+  @@index([walkId, seq])
 }
 
 /// Intermediate ground-truth waypoint marked mid-walk (B2). The collector taps
@@ -589,6 +610,15 @@ model TrajectoryImuSample {
   // Environmental
   pressure         Float?
   relativeAltitude Float?
+
+  // On-device gait-detector state at this sample (lib/step-detector.ts). Lets the
+  // AI team replay/debug walking classification offline and use it as features.
+  // All nullable — legacy rows (recorded before this) have them null.
+  vertAccel       Float?   // userAccel · ĝ (m/s²) — signed gravity-axis component (v5 gate input)
+  gaitVerticality Float?   // Σvert²/Σ|userAccel|² over 500 ms (0–1; <0.25 ⇒ lateral shake)
+  gaitEnergy      Float?   // recent-energy (variance of smoothed |userAccel|) — fast-stop signal
+  gaitIsWalking   Boolean? // detector isWalking output at this sample
+  gaitAmplitude   Float?   // adaptive peak-valley amplitude of |userAccel| used for step detection
 
   @@index([walkId, capturedAt])
 }

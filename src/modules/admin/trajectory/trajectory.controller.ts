@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import * as TrajectoryService from "./trajectory.service";
+import { uploadWalksSchema } from "./trajectory.schema";
+import { sendValidationError } from "../../../utils/response";
 
 export const createSession = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -59,13 +61,19 @@ export const deleteSession = async (req: Request, res: Response, next: NextFunct
 
 export const uploadWalks = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { id } = req.params;
+    const { params, body } = uploadWalksSchema.parse({
+      params: req.params,
+      body: req.body,
+    });
     const result = await TrajectoryService.uploadWalks({
-      sessionId: id,
-      ...req.body,
+      sessionId: params.id,
+      ...body,
     });
     res.status(201).json({ success: true, data: result });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.name === "ZodError") {
+      return sendValidationError(res, error.errors);
+    }
     next(error);
   }
 };

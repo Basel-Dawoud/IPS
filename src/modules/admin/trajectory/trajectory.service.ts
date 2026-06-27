@@ -21,8 +21,43 @@ const chunked = <T>(arr: T[], size = BULK_CHUNK_SIZE): T[][] => {
 /** A single (x, y) ground-truth vertex stamped at absolute epoch-ms `t`. */
 type LabelAnchor = { t: number; x: number; y: number };
 
+/** A stationary pause in absolute epoch-ms. */
+type PauseInterval = { start: number; end: number };
+
 const toEpochMs = (d: string | Date): number =>
   d instanceof Date ? d.getTime() : new Date(d).getTime();
+
+/**
+ * Convert a walk's pause markers (monotonic tMs relative to walk start) into
+ * absolute-epoch intervals. `resumeTMs` null/absent ⇒ the walk ended while
+ * still paused, so the interval closes at `endedAt`. Zero/negative-width
+ * intervals are dropped; the rest are returned sorted by start.
+ */
+const buildPauseIntervals = (walk: {
+  startedAt: string | Date;
+  endedAt: string | Date;
+  pauses?: { pauseTMs: number; resumeTMs?: number | null }[];
+}): PauseInterval[] => {
+  const startEpoch = toEpochMs(walk.startedAt);
+  const endEpoch = toEpochMs(walk.endedAt);
+  return (walk.pauses ?? [])
+    .map((p) => ({
+      start: startEpoch + p.pauseTMs,
+      end: p.resumeTMs != null ? startEpoch + p.resumeTMs : endEpoch,
+    }))
+    .filter((iv) => iv.end > iv.start)
+    .sort((a, b) => a.start - b.start);
+};
+
+/** Total stationary (paused) time elapsed at or before absolute time `t`. */
+const pausedTimeBefore = (intervals: PauseInterval[], t: number): number => {
+  let acc = 0;
+  for (const iv of intervals) {
+    if (t <= iv.start) break;
+    acc += Math.min(t, iv.end) - iv.start;
+  }
+  return acc;
+};
 
 /**
  * Build the time-ordered ground-truth polyline for a walk:
@@ -34,6 +69,17 @@ const toEpochMs = (d: string | Date): number =>
  * waypoint. With checkpoints the path bends through every marked (x, y), and
  * because the end anchor sits at `endedAt` a sample at end-time lands exactly on
  * (endX, endY).
+ *
+ * Pause-aware (moving clock): a marked pause means the walker stood still over
+ * [pauseTMs, resumeTMs] — they cover the path during MOVING time only. We model
+ * this with a moving clock that freezes during pauses: base anchors are mapped
+ * to moving-time, then we emit a real-time polyline whose vertices are every
+ * base anchor + pause boundary, positioned via that clock. Linear interpolation
+ * of the returned polyline in real epoch-time therefore "moves between anchors
+ * and holds still through each pause" — the held position is the correct
+ * mid-segment point, not just a frozen-but-wrong value. With no pauses this is
+ * exactly the old straight-line behavior. NOTE: this freezes only the LABEL —
+ * every sensor sample recorded during the pause is kept (stationary noise data).
  */
 const buildAnchors = (walk: {
   startX: number;
@@ -43,8 +89,9 @@ const buildAnchors = (walk: {
   startedAt: string | Date;
   endedAt: string | Date;
   checkpoints?: { x: number; y: number; capturedAt: string | Date }[];
+  pauses?: { pauseTMs: number; resumeTMs?: number | null }[];
 }): LabelAnchor[] => {
-  const anchors: LabelAnchor[] = [
+  const base: LabelAnchor[] = [
     { t: toEpochMs(walk.startedAt), x: walk.startX, y: walk.startY },
     ...(walk.checkpoints ?? []).map((c) => ({
       t: toEpochMs(c.capturedAt),
@@ -53,8 +100,33 @@ const buildAnchors = (walk: {
     })),
     { t: toEpochMs(walk.endedAt), x: walk.endX, y: walk.endY },
   ];
-  anchors.sort((a, b) => a.t - b.t);
-  return anchors;
+  base.sort((a, b) => a.t - b.t);
+
+  const intervals = buildPauseIntervals(walk);
+  if (intervals.length === 0) return base;
+
+  // Base anchors expressed in moving-time (pauses removed). Position is a
+  // piecewise-linear function of moving-time over these.
+  const movingAnchors: LabelAnchor[] = base.map((a) => ({
+    t: a.t - pausedTimeBefore(intervals, a.t),
+    x: a.x,
+    y: a.y,
+  }));
+
+  // Real-time polyline vertices = base anchor times ∪ pause boundaries. The
+  // moving clock is linear between these, so this set captures every breakpoint.
+  const vertexTimes = new Set<number>();
+  for (const a of base) vertexTimes.add(a.t);
+  for (const iv of intervals) {
+    vertexTimes.add(iv.start);
+    vertexTimes.add(iv.end);
+  }
+  return [...vertexTimes]
+    .sort((a, b) => a - b)
+    .map((t) => {
+      const pos = interpolateAtTime(movingAnchors, t - pausedTimeBefore(intervals, t));
+      return { t, x: pos.x, y: pos.y };
+    });
 };
 
 /**
@@ -224,13 +296,27 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
     throw Object.assign(new Error("Cannot add walks to archived session"), { status: 400 });
   }
 
+  // Only accept BLE readings from beacons registered to this building — a
+  // foreign/fabricated beaconUid must never enter the training dataset. Dropped
+  // readings are counted and reported, not fatal (a stray advert shouldn't void
+  // an otherwise good walk).
+  const registeredBeacons = await prisma.bleBeacon.findMany({
+    where: { buildingId: session.buildingId },
+    select: { beaconUid: true },
+  });
+  const allowedUids = new Set(
+    registeredBeacons.map((b: { beaconUid: string }) => b.beaconUid.toLowerCase())
+  );
+
   let walksCreated = 0;
   let walksSkipped = 0;
   let stepsCreated = 0;
   let imuSamplesCreated = 0;
   let bleReadingsCreated = 0;
+  let bleReadingsDroppedUnknownBeacon = 0;
   let wifiReadingsCreated = 0;
   let checkpointsCreated = 0;
+  let pausesCreated = 0;
 
   for (const walk of data.walks) {
     // B6 idempotency: skip a walk we've already stored under this clientId.
@@ -284,6 +370,19 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
         checkpointsCreated += cpRows.length;
       }
 
+      if (walk.pauses && walk.pauses.length > 0) {
+        const pauseRows = walk.pauses.map((p) => ({
+          walkId: walkRow.id,
+          seq: p.seq,
+          pauseTMs: p.pauseTMs,
+          resumeTMs: p.resumeTMs ?? null,
+        }));
+        for (const chunk of chunked(pauseRows)) {
+          await tx.trajectoryPauseEvent.createMany({ data: chunk });
+        }
+        pausesCreated += pauseRows.length;
+      }
+
       if (walk.steps.length > 0) {
         const stepRows = walk.steps.map((s) => {
           const pos = interpolateAtTime(anchors, toEpochMs(s.capturedAt));
@@ -325,6 +424,11 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
           yaw: r.yaw ?? null,
           pressure: r.pressure ?? null,
           relativeAltitude: r.relativeAltitude ?? null,
+          vertAccel: r.vertAccel ?? null,
+          gaitVerticality: r.gaitVerticality ?? null,
+          gaitEnergy: r.gaitEnergy ?? null,
+          gaitIsWalking: r.gaitIsWalking ?? null,
+          gaitAmplitude: r.gaitAmplitude ?? null,
         }));
         for (const chunk of chunked(imuRows)) {
           await tx.trajectoryImuSample.createMany({ data: chunk });
@@ -333,7 +437,11 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
       }
 
       if (walk.ble.length > 0) {
-        const bleRows = walk.ble.map((r) => ({
+        const acceptedBle = walk.ble.filter((r) =>
+          allowedUids.has(r.beaconUid.toLowerCase())
+        );
+        bleReadingsDroppedUnknownBeacon += walk.ble.length - acceptedBle.length;
+        const bleRows = acceptedBle.map((r) => ({
           walkId: walkRow.id,
           capturedAt: new Date(r.capturedAt),
           tMs: r.tMs ?? null,
@@ -372,8 +480,10 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
     stepsCreated,
     imuSamplesCreated,
     bleReadingsCreated,
+    bleReadingsDroppedUnknownBeacon,
     wifiReadingsCreated,
     checkpointsCreated,
+    pausesCreated,
   };
 };
 
@@ -474,6 +584,7 @@ export const replaySession = async (
       bleReadings: { orderBy: { capturedAt: "asc" } },
       wifiReadings: { orderBy: { capturedAt: "asc" } },
       checkpoints: { orderBy: { seq: "asc" } },
+      pauseEvents: { orderBy: { seq: "asc" } },
     },
   });
 
@@ -481,7 +592,10 @@ export const replaySession = async (
   const page = hasMore ? walks.slice(0, walkLimit) : walks;
 
   const replayWalks = page.map((walk: any) => {
-    const anchors = buildAnchors(walk);
+    // Pause-aware anchors: hold the ground-truth label still across each pause
+    // (sensor events recorded during the pause are still emitted with that held
+    // position — stationary data is preserved, not dropped).
+    const anchors = buildAnchors({ ...walk, pauses: walk.pauseEvents });
     const startMs = toEpochMs(walk.startedAt);
 
     // Relative time of an event: prefer recorded monotonic tMs, else derive.
@@ -515,6 +629,10 @@ export const replaySession = async (
           magX: r.magX, magY: r.magY, magZ: r.magZ,
           pitch: r.pitch, roll: r.roll, yaw: r.yaw,
           pressure: r.pressure, relativeAltitude: r.relativeAltitude,
+          // On-device gait state (null on legacy rows recorded before this).
+          vertAccel: r.vertAccel, gaitVerticality: r.gaitVerticality,
+          gaitEnergy: r.gaitEnergy, gaitIsWalking: r.gaitIsWalking,
+          gaitAmplitude: r.gaitAmplitude,
         },
       });
     }
@@ -559,6 +677,11 @@ export const replaySession = async (
       imuRateHz: walk.imuRateHz,
       magCalibrated: walk.magCalibrated,
       anchors: anchors.map((a) => ({ tMs: a.t - startMs, x: a.x, y: a.y })),
+      pauses: (walk.pauseEvents ?? []).map((p: any) => ({
+        seq: p.seq,
+        pauseTMs: p.pauseTMs,
+        resumeTMs: p.resumeTMs ?? undefined,
+      })),
       eventCount: events.length,
       events,
     };

@@ -45,6 +45,16 @@ export const trajectoryCheckpointSchema = z.object({
   capturedAt: z.string().datetime(),
 });
 
+/**
+ * A stationary pause marked mid-walk. `resumeTMs` omitted ⇒ the walk ended
+ * while still paused (server closes the interval at endedAt).
+ */
+export const trajectoryPauseSchema = z.object({
+  seq: z.number().int().min(0),
+  pauseTMs: z.number(),
+  resumeTMs: z.number().optional(),
+});
+
 export const trajectoryImuSampleSchema = z.object({
   capturedAt: z.string().datetime(),
   tMs: z.number().optional(),
@@ -65,13 +75,20 @@ export const trajectoryImuSampleSchema = z.object({
   yaw: z.number().optional(),
   pressure: z.number().optional(),
   relativeAltitude: z.number().optional(),
+  // On-device gait-detector state (optional; legacy clients omit).
+  vertAccel: z.number().optional(),
+  gaitVerticality: z.number().optional(),
+  gaitEnergy: z.number().optional(),
+  gaitIsWalking: z.boolean().optional(),
+  gaitAmplitude: z.number().optional(),
 });
 
 export const trajectoryBleReadingSchema = z.object({
   capturedAt: z.string().datetime(),
   tMs: z.number().optional(),
-  beaconUid: z.string().min(1),
-  rssi: z.number().int(),
+  beaconUid: z.string().min(1).max(128),
+  // Physically plausible BLE RSSI band — rejects garbage like 0 or 12345.
+  rssi: z.number().int().min(-127).max(0),
 });
 
 export const trajectoryWifiReadingSchema = z.object({
@@ -95,11 +112,14 @@ export const trajectoryWalkSchema = z.object({
   clockEpochMs: z.number().optional(),
   imuRateHz: z.number().int().optional(),
   magCalibrated: z.boolean().optional(),
-  steps: z.array(trajectoryStepEventSchema),
-  imu: z.array(trajectoryImuSampleSchema),
-  ble: z.array(trajectoryBleReadingSchema),
-  wifi: z.array(trajectoryWifiReadingSchema).optional(),
-  checkpoints: z.array(trajectoryCheckpointSchema).optional(),
+  // Per-walk caps: generous for real walks (IMU cap ≈ 50 min @ 50 Hz) but
+  // bounded so a single request can't exhaust server memory.
+  steps: z.array(trajectoryStepEventSchema).max(20_000),
+  imu: z.array(trajectoryImuSampleSchema).max(150_000),
+  ble: z.array(trajectoryBleReadingSchema).max(100_000),
+  wifi: z.array(trajectoryWifiReadingSchema).max(5_000).optional(),
+  checkpoints: z.array(trajectoryCheckpointSchema).max(500).optional(),
+  pauses: z.array(trajectoryPauseSchema).max(500).optional(),
 });
 
 export const uploadWalksSchema = z.object({
@@ -108,7 +128,7 @@ export const uploadWalksSchema = z.object({
   }),
   body: z.object({
     deviceModel: z.string().optional(),
-    walks: z.array(trajectoryWalkSchema).min(1),
+    walks: z.array(trajectoryWalkSchema).min(1).max(50),
   }),
 });
 
