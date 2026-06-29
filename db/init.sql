@@ -1,11 +1,12 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 CREATE TABLE IF NOT EXISTS device_positions (
-    ts          TIMESTAMPTZ NOT NULL,
-    id          BIGINT GENERATED ALWAYS AS IDENTITY,
-    device_id   TEXT NOT NULL,
-    building_id TEXT NOT NULL,
-    floor       INTEGER NOT NULL,
+    ts          TIMESTAMPTZ      NOT NULL,
+    id          BIGINT           GENERATED ALWAYS AS IDENTITY,
+    device_id   TEXT             NOT NULL,
+    building_id TEXT             NOT NULL,
+    floor       INTEGER          NOT NULL,
+    zone_id     TEXT,                        -- nullable: matches MQTT contract, not always known
     x           DOUBLE PRECISION NOT NULL,
     y           DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (ts, id)

@@ -2,3 +2,5 @@ fastapi==0.115.0
 uvicorn==0.30.6
 aiomqtt==2.3.0
 asyncpg==0.29.0
+redis==5.0.8
+websockets==13.1

@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPS — Live Floor Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:        #0B1220;
+    --paper:      #0E2A3D;
+    --line:       #E8DEC8;
+    --line-dim:   #5C6B73;
+    --panel:      #101B2C;
+    --panel-edge: #1C2D40;
+    --text:       #F2EFE6;
+    --text-dim:   #93A0AE;
+    --signal:     #2DD4A7;
+    --signal-dim: rgba(45, 212, 167, 0.18);
+    --zone-2:     #1FA9C7;
+    --zone-3:     #F2A33C;
+    --danger:     #E2574C;
+
+    --font-display: 'Space Grotesk', sans-serif;
+    --font-ui:      'Inter', sans-serif;
+    --font-mono:    'IBM Plex Mono', monospace;
+  }
+
+  *{ box-sizing: border-box; }
+
+  body{
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--font-ui);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────────────── */
+  header{
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--panel-edge);
+    flex-shrink: 0;
+  }
+  .brand{ display: flex; align-items: baseline; gap: 10px; }
+  .brand .mark{ font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.02em; }
+  .brand .sub{ font-size: 13px; color: var(--text-dim); }
+
+  .health-strip{
+    display: flex;
+    gap: 14px;
+    padding-left: 16px;
+    border-left: 1px solid var(--panel-edge);
+  }
+  .health-item{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .health-dot{
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--danger);
+  }
+  .health-dot.ok{ background: var(--signal); }
+
+  .sheet-tabs{ display: flex; gap: 2px; margin-left: auto; }
+  .sheet-tab{
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    padding: 8px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .sheet-tab:first-child{ border-radius: 4px 0 0 4px; }
+  .sheet-tab:last-child{ border-radius: 0 4px 4px 0; border-left: none; }
+  .sheet-tab.active{ color: var(--text); border-color: var(--signal); background: #0F2520; }
+  .sheet-tab .count{ font-weight: 600; min-width: 14px; text-align: right; }
+  .sheet-tab.active .count{ color: var(--signal); }
+  .sheet-tab:not(.active) .count{ color: var(--text-dim); }
+
+  .conn{
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);
+    padding: 6px 12px; border: 1px solid var(--panel-edge); border-radius: 999px;
+  }
+  .conn .dot{ width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .conn.live .dot{ background: var(--signal); box-shadow: 0 0 0 0 var(--signal-dim); animation: pulse 2s infinite; }
+  .conn.live{ color: var(--text); }
+  @keyframes pulse{
+    0%   { box-shadow: 0 0 0 0   var(--signal-dim); }
+    70%  { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0   transparent; }
+  }
+
+  /* ── Body layout ──────────────────────────────────────────────────────── */
+  .body{ flex: 1; display: flex; min-height: 0; }
+
+  .stage{
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    min-width: 0;
+    background:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px) 0 0/24px 24px,
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px) 0 0/24px 24px;
+  }
+
+  .map-frame{
+    position: relative;
+    width: 100%;
+    max-height: 100%;
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px -20px rgba(0,0,0,0.6);
+  }
+  .map-frame img{ display: block; width: 100%; height: 100%; image-rendering: crisp-edges; }
+  .map-frame canvas{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+
+  .calib-note{
+    position: absolute;
+    bottom: 14px; right: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--zone-3);
+    background: rgba(11,18,32,0.85);
+    border: 1px solid var(--zone-3);
+    padding: 6px 10px;
+    border-radius: 4px;
+    max-width: 260px;
+    text-align: right;
+    line-height: 1.5;
+  }
+
+  /* ── Right instrument panel ──────────────────────────────────────────── */
+  .panel{
+    width: 300px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--panel-edge);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .panel-section{ padding: 18px 20px; border-bottom: 1px solid var(--panel-edge); }
+  .panel-label{
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 10px;
+  }
+  .occupancy-readout{ font-family: var(--font-mono); font-size: 42px; font-weight: 600; color: var(--signal); line-height: 1; }
+  .occupancy-sub{ font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+  .legend-row{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-dim); padding: 4px 0; }
+  .swatch{ width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+
+  /* Selected device panel */
+  .selected-empty{ font-size: 12px; color: var(--text-dim); }
+  .selected-title{ font-family: var(--font-mono); font-size: 14px; color: var(--signal); margin-bottom: 10px; }
+  .selected-grid{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .selected-row{ font-size: 12px; }
+  .selected-row .k{ color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .selected-row .v{ font-family: var(--font-mono); color: var(--text); margin-top: 2px; }
+
+  .device-list{ flex: 1; overflow-y: auto; }
+  .device-row{
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+    padding: 10px 20px; border-bottom: 1px solid var(--panel-edge);
+    font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+  }
+  .device-row:hover{ background: rgba(255,255,255,0.03); }
+  .device-row.selected{ background: rgba(45, 212, 167, 0.08); }
+  .device-row .id{ color: var(--text); }
+  .device-row .floor-badge{ font-size: 10px; color: var(--ink); background: var(--signal); border-radius: 3px; padding: 1px 6px; align-self: start; }
+  .device-row .coords{ color: var(--text-dim); grid-column: 1 / -1; }
+  .device-row .updated{ color: var(--line-dim); grid-column: 1 / -1; font-size: 11px; }
+
+  .empty-state{ padding: 30px 20px; color: var(--text-dim); font-size: 13px; text-align: center; }
+
+  .calib-toggle{ display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+  .calib-toggle input{ accent-color: var(--signal); }
+  .calib-readout{ font-family: var(--font-mono); font-size: 11px; color: var(--zone-2); margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span class="mark">IPS</span>
+      <span class="sub">Live Floor Plan · Building 1</span>
+    </div>
+
+    <div class="health-strip" id="healthStrip">
+      <div class="health-item"><span class="health-dot" id="dotMqtt"></span>MQTT</div>
+      <div class="health-item"><span class="health-dot" id="dotRedis"></span>REDIS</div>
+      <div class="health-item"><span class="health-dot" id="dotDb"></span>DB</div>
+    </div>
+
+    <div class="sheet-tabs" id="sheetTabs"></div>
+    <div class="conn" id="connBadge"><span class="dot"></span><span id="connLabel">Connecting…</span></div>
+  </header>
+
+  <div class="body">
+    <div class="stage">
+      <div class="map-frame" id="mapFrame">
+        <img id="floorImg" alt="Floor plan">
+        <canvas id="overlay"></canvas>
+        <div class="calib-note" id="calibNote" style="display:none">
+          meters_per_cell not set in server/floors.json — live dots are
+          hidden until calibrated.
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-section">
+        <div class="panel-label">Occupancy · this level</div>
+        <div class="occupancy-readout" id="occupancyCount">0</div>
+        <div class="occupancy-sub" id="occupancyTotal">0 total across both levels</div>
+      </div>
+
+      <div class="panel-section" id="selectedSection">
+        <div class="panel-label">Selected device</div>
+        <div class="selected-empty" id="selectedEmpty">Click a device on the map or in the list below.</div>
+        <div id="selectedContent" style="display:none">
+          <div class="selected-title" id="selTitle"></div>
+          <div class="selected-grid">
+            <div class="selected-row"><div class="k">Floor</div><div class="v" id="selFloor">—</div></div>
+            <div class="selected-row"><div class="k">Battery</div><div class="v" id="selBattery">—</div></div>
+            <div class="selected-row"><div class="k">Position</div><div class="v" id="selPos">—</div></div>
+            <div class="selected-row"><div class="k">Motion</div><div class="v" id="selMotion">—</div></div>
+            <div class="selected-row"><div class="k">Accuracy</div><div class="v" id="selAccuracy">—</div></div>
+            <div class="selected-row"><div class="k">Last update</div><div class="v" id="selAge">—</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-label">Legend</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--line)"></span> Wall / structure</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--zone-2)"></span> Tagged zone · type 2</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--zone-3)"></span> Tagged zone · type 3</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--signal)"></span> Live device</div>
+      </div>
+
+      <div class="panel-section">
+        <label class="calib-toggle">
+          <input type="checkbox" id="calibToggle">
+          Show grid coordinates on hover
+        </label>
+        <div class="calib-readout" id="calibReadout"></div>
+      </div>
+
+      <div class="device-list" id="deviceList">
+        <div class="empty-state">No active devices yet.<br>Run the simulator on floor 3 or 4.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   CONFIG
+   ════════════════════════════════════════════════════════════════════════ */
+
+const API_BASE = (() => {
+  const host = location.hostname || 'localhost';
+  return `http://${host}:8000`;
+})();
+
+const WS_URL = (() => {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const host  = location.hostname || 'localhost';
+  return `${proto}://${host}:8000/ws/live`;
+})();
+
+const STALE_TIMEOUT_MS = 5000;
+const RECONNECT_DELAY_MS = 2000;
+const HEALTH_POLL_MS = 5000;
+const TRAIL_LENGTH = 16;
+
+/* ════════════════════════════════════════════════════════════════════════
+   STATE
+   ════════════════════════════════════════════════════════════════════════ */
+
+let floorsConfig = null;     // fetched from GET /floors — single source of truth
+let activeFloor = null;
+let selectedDeviceId = null;
+
+const devicesByFloor = {};   // floor -> Map(device_id -> {prev, target, trail, ...})
+const statusByDevice = {};   // device_id -> latest status payload
+
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const floorImg = document.getElementById('floorImg');
+const mapFrame = document.getElementById('mapFrame');
+const calibNote = document.getElementById('calibNote');
+const calibToggle = document.getElementById('calibToggle');
+const calibReadout = document.getElementById('calibReadout');
+
+/* ════════════════════════════════════════════════════════════════════════
+   BOOT — fetch floor metadata from the backend before building anything
+   ════════════════════════════════════════════════════════════════════════ */
+
+async function boot(){
+  const res = await fetch(`${API_BASE}/floors`);
+  floorsConfig = await res.json();
+
+  Object.keys(floorsConfig).forEach(floor => { devicesByFloor[floor] = new Map(); });
+  activeFloor = Object.keys(floorsConfig)[0];
+
+  buildTabs();
+  loadFloorImage(activeFloor);
+  connectWebSocket();
+  pollHealth();
+  setInterval(pollHealth, HEALTH_POLL_MS);
+  requestAnimationFrame(renderFrame);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   FLOOR / SHEET TABS
+   ════════════════════════════════════════════════════════════════════════ */
+
+function buildTabs(){
+  const wrap = document.getElementById('sheetTabs');
+  wrap.innerHTML = '';
+  Object.keys(floorsConfig).forEach(floor => {
+    const tab = document.createElement('div');
+    tab.className = 'sheet-tab' + (floor === activeFloor ? ' active' : '');
+    tab.dataset.floor = floor;
+    tab.innerHTML = `LEVEL 0${floor} <span class="count" id="tabCount${floor}">0</span>`;
+    tab.addEventListener('click', () => setActiveFloor(floor));
+    wrap.appendChild(tab);
+  });
+}
+
+function setActiveFloor(floor){
+  activeFloor = floor;
+  document.querySelectorAll('.sheet-tab').forEach(t => t.classList.toggle('active', t.dataset.floor === floor));
+  loadFloorImage(floor);
+  renderDeviceList();
+}
+
+function loadFloorImage(floor){
+  const dims = floorsConfig[floor];
+  mapFrame.style.aspectRatio = `${dims.cols} / ${dims.rows}`;
+  floorImg.src = dims.image;
+  canvas.width = dims.cols;
+  canvas.height = dims.rows;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   COORDINATE MAPPING (meters -> grid cells), per active floor's config
+   ════════════════════════════════════════════════════════════════════════ */
+
+function metersToCell(floor, x, y){
+  const dims = floorsConfig[floor];
+  if (!dims || dims.meters_per_cell === null || dims.meters_per_cell === undefined) return null;
+  return {
+    col: dims.origin.col + x / dims.meters_per_cell,
+    row: dims.origin.row + y / dims.meters_per_cell,
+  };
+}
+
+function screenToCell(clientX, clientY){
+  const dims = floorsConfig[activeFloor];
+  const rect = canvas.getBoundingClientRect();
+  return {
+    col: ((clientX - rect.left) / rect.width) * dims.cols,
+    row: ((clientY - rect.top) / rect.height) * dims.rows,
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   WEBSOCKET — event-driven: one snapshot on connect, deltas after
+   ════════════════════════════════════════════════════════════════════════ */
+
+function connectWebSocket(){
+  const ws = new WebSocket(WS_URL);
+  const badge = document.getElementById('connBadge');
+  const label = document.getElementById('connLabel');
+
+  ws.onopen = () => {
+    badge.classList.add('live');
+    label.textContent = WS_URL.replace(/^wss?:\/\//, '');
+  };
+
+  ws.onclose = () => {
+    badge.classList.remove('live');
+    label.textContent = 'Reconnecting…';
+    setTimeout(connectWebSocket, RECONNECT_DELAY_MS);
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === 'snapshot') {
+      msg.items.forEach(item => upsertPosition(item));
+    } else if (msg.type === 'position') {
+      upsertPosition(msg);
+    } else if (msg.type === 'status') {
+      statusByDevice[msg.device_id] = msg;
+      if (msg.device_id === selectedDeviceId) updateSelectedPanel();
+    }
+
+    updateCounts();
+    renderDeviceList();
+  };
+}
+
+function upsertPosition(item){
+  const floor = String(item.floor);
+  if (!devicesByFloor[floor]) return; // unknown floor, ignore safely
+
+  const map = devicesByFloor[floor];
+  const now = Date.now();
+  const target = { x: item.x, y: item.y, accuracy: item.accuracy || 1.0 };
+  const existing = map.get(item.device_id);
+
+  if (existing) {
+    existing.prev = existing.target;
+    existing.target = target;
+    existing.animStart = now;
+    existing.trail.push(target);
+    if (existing.trail.length > TRAIL_LENGTH) existing.trail.shift();
+  } else {
+    map.set(item.device_id, {
+      prev: target,
+      target: target,
+      animStart: now,
+      device_id: item.device_id,
+      floor: floor,
+      trail: [target],
+    });
+  }
+  const entry = map.get(item.device_id);
+  entry.lastSeen = now;
+  entry.raw = item;
+
+  if (item.device_id === selectedDeviceId) updateSelectedPanel();
+}
+
+function updateCounts(){
+  Object.keys(floorsConfig).forEach(floor => {
+    pruneStale(floor);
+    const el = document.getElementById(`tabCount${floor}`);
+    if (el) el.textContent = devicesByFloor[floor].size;
+  });
+  const activeCount = devicesByFloor[activeFloor].size;
+  const total = Object.values(devicesByFloor).reduce((sum, m) => sum + m.size, 0);
+  document.getElementById('occupancyCount').textContent = activeCount;
+  document.getElementById('occupancyTotal').textContent = `${total} total across both levels`;
+}
+
+function pruneStale(floor){
+  const now = Date.now();
+  const map = devicesByFloor[floor];
+  for (const [id, d] of map.entries()) {
+    if (now - d.lastSeen > STALE_TIMEOUT_MS) {
+      map.delete(id);
+      if (id === selectedDeviceId) clearSelection();
+    }
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SYSTEM HEALTH STRIP
+   ════════════════════════════════════════════════════════════════════════ */
+
+async function pollHealth(){
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    const data = await res.json();
+    document.getElementById('dotMqtt').classList.toggle('ok', !!data.mqtt_connected);
+    document.getElementById('dotRedis').classList.toggle('ok', !!data.redis_connected);
+    document.getElementById('dotDb').classList.toggle('ok', !!data.postgres_connected);
+  } catch {
+    ['dotMqtt', 'dotRedis', 'dotDb'].forEach(id => document.getElementById(id).classList.remove('ok'));
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   DEVICE LIST + SELECTION
+   ════════════════════════════════════════════════════════════════════════ */
+
+function renderDeviceList(){
+  const list = document.getElementById('deviceList');
+  const all = Object.values(devicesByFloor)
+    .flatMap(map => [...map.values()])
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+
+  if (all.length === 0) {
+    list.innerHTML = '<div class="empty-state">No active devices yet.<br>Run the simulator on floor 3 or 4.</div>';
+    return;
+  }
+
+  list.innerHTML = all.map(d => {
+    const ageSec = Math.max(0, Math.round((Date.now() - d.lastSeen) / 1000));
+    const sel = d.device_id === selectedDeviceId ? ' selected' : '';
+    return `
+      <div class="device-row${sel}" data-id="${d.device_id}">
+        <span class="id">${d.device_id}</span>
+        <span class="floor-badge">L0${d.floor}</span>
+        <span class="coords">x ${d.target.x.toFixed(1)}  y ${d.target.y.toFixed(1)}</span>
+        <span class="updated">${ageSec}s ago</span>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('.device-row').forEach(row => {
+    row.addEventListener('click', () => selectDevice(row.dataset.id));
+  });
+}
+
+function findDevice(deviceId){
+  for (const map of Object.values(devicesByFloor)) {
+    if (map.has(deviceId)) return map.get(deviceId);
+  }
+  return null;
+}
+
+function selectDevice(deviceId){
+  selectedDeviceId = deviceId;
+  updateSelectedPanel();
+  renderDeviceList();
+}
+
+function clearSelection(){
+  selectedDeviceId = null;
+  document.getElementById('selectedEmpty').style.display = 'block';
+  document.getElementById('selectedContent').style.display = 'none';
+  renderDeviceList();
+}
+
+function updateSelectedPanel(){
+  const d = findDevice(selectedDeviceId);
+  if (!d) { clearSelection(); return; }
+
+  document.getElementById('selectedEmpty').style.display = 'none';
+  document.getElementById('selectedContent').style.display = 'block';
+  document.getElementById('selTitle').textContent = d.device_id;
+  document.getElementById('selFloor').textContent = `Level 0${d.floor}`;
+  document.getElementById('selPos').textContent = `${d.target.x.toFixed(1)}, ${d.target.y.toFixed(1)} m`;
+  document.getElementById('selMotion').textContent = d.raw.motion || '—';
+  document.getElementById('selAccuracy').textContent = d.raw.accuracy ? `${d.raw.accuracy.toFixed(1)} m` : '—';
+
+  const status = statusByDevice[d.device_id];
+  document.getElementById('selBattery').textContent = status && status.battery != null ? `${status.battery}%` : '—';
+
+  const ageSec = Math.max(0, Math.round((Date.now() - d.lastSeen) / 1000));
+  document.getElementById('selAge').textContent = `${ageSec}s ago`;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   RENDER LOOP — interpolated dots, trails, scale bar, compass
+   ════════════════════════════════════════════════════════════════════════ */
+
+function lerp(a, b, t){ return a + (b - a) * t; }
+
+function drawScaleBar(){
+  const dims = floorsConfig[activeFloor];
+  const mpc = dims.meters_per_cell;
+  const barMeters = mpc ? Math.max(5, Math.round(dims.cols * mpc * 0.1)) : 5;
+  const barCells = mpc ? barMeters / mpc : dims.cols * 0.08;
+
+  const x0 = dims.cols * 0.03;
+  const y0 = dims.rows * 0.92;
+
+  ctx.strokeStyle = '#E8DEC8';
+  ctx.fillStyle = '#E8DEC8';
+  ctx.lineWidth = dims.rows * 0.006;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x0 + barCells, y0);
+  ctx.stroke();
+  [x0, x0 + barCells].forEach(x => {
+    ctx.beginPath();
+    ctx.moveTo(x, y0 - dims.rows * 0.015);
+    ctx.lineTo(x, y0 + dims.rows * 0.015);
+    ctx.stroke();
+  });
+
+  ctx.font = `${dims.rows * 0.045}px 'IBM Plex Mono', monospace`;
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(mpc ? `${barMeters} m` : 'scale unset', x0, y0 - dims.rows * 0.02);
+}
+
+function drawCompass(){
+  const dims = floorsConfig[activeFloor];
+  const cx = dims.cols * 0.97;
+  const cy = dims.rows * 0.12;
+  const r = dims.rows * 0.08;
+
+  ctx.strokeStyle = '#E8DEC8';
+  ctx.lineWidth = dims.rows * 0.01;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + r);
+  ctx.lineTo(cx, cy - r);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r);
+  ctx.lineTo(cx - r * 0.35, cy - r * 0.45);
+  ctx.moveTo(cx, cy - r);
+  ctx.lineTo(cx + r * 0.35, cy - r * 0.45);
+  ctx.stroke();
+
+  ctx.font = `${dims.rows * 0.05}px 'IBM Plex Mono', monospace`;
+  ctx.fillStyle = '#E8DEC8';
+  ctx.textAlign = 'center';
+  ctx.fillText('N', cx, cy - r - dims.rows * 0.02);
+  ctx.textAlign = 'left';
+}
+
+function drawDevices(){
+  const dims = floorsConfig[activeFloor];
+  const map = devicesByFloor[activeFloor];
+  const now = Date.now();
+
+  if (dims.meters_per_cell === null || dims.meters_per_cell === undefined) {
+    calibNote.style.display = 'block';
+    return;
+  }
+  calibNote.style.display = 'none';
+
+  for (const d of map.values()) {
+    const t = Math.min(1, (now - d.animStart) / 1000);
+    const x = lerp(d.prev.x, d.target.x, t);
+    const y = lerp(d.prev.y, d.target.y, t);
+    const cell = metersToCell(activeFloor, x, y);
+    if (!cell) continue;
+
+    const isSelected = d.device_id === selectedDeviceId;
+
+    // fading trail
+    if (d.trail.length > 1) {
+      for (let i = 1; i < d.trail.length; i++) {
+        const p0 = metersToCell(activeFloor, d.trail[i - 1].x, d.trail[i - 1].y);
+        const p1 = metersToCell(activeFloor, d.trail[i].x, d.trail[i].y);
+        if (!p0 || !p1) continue;
+        const alpha = (i / d.trail.length) * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(p0.col, p0.row);
+        ctx.lineTo(p1.col, p1.row);
+        ctx.strokeStyle = `rgba(45, 212, 167, ${alpha})`;
+        ctx.lineWidth = dims.rows * 0.005;
+        ctx.stroke();
+      }
+    }
+
+    const accuracyCells = (d.target.accuracy || 1.0) / dims.meters_per_cell;
+
+    // accuracy halo
+    ctx.beginPath();
+    ctx.arc(cell.col, cell.row, accuracyCells, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(45, 212, 167, 0.15)';
+    ctx.fill();
+
+    // breathing pulse ring
+    const pulse = 0.5 + 0.5 * Math.sin(now / 500);
+    ctx.beginPath();
+    ctx.arc(cell.col, cell.row, dims.rows * 0.012 * (1 + pulse * 0.6), 0, 2 * Math.PI);
+    ctx.strokeStyle = `rgba(45, 212, 167, ${0.5 - pulse * 0.3})`;
+    ctx.lineWidth = dims.rows * 0.004;
+    ctx.stroke();
+
+    // selection ring
+    if (isSelected) {
+      ctx.beginPath();
+      ctx.arc(cell.col, cell.row, dims.rows * 0.028, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#F2EFE6';
+      ctx.lineWidth = dims.rows * 0.005;
+      ctx.stroke();
+    }
+
+    // core dot
+    ctx.beginPath();
+    ctx.arc(cell.col, cell.row, dims.rows * 0.012, 0, 2 * Math.PI);
+    ctx.fillStyle = '#2DD4A7';
+    ctx.fill();
+    ctx.strokeStyle = '#0B1220';
+    ctx.lineWidth = dims.rows * 0.004;
+    ctx.stroke();
+
+    // label
+    ctx.font = `${dims.rows * 0.045}px 'IBM Plex Mono', monospace`;
+    ctx.fillStyle = '#F2EFE6';
+    ctx.textAlign = 'center';
+    const shortId = d.device_id.split('-')[1] || d.device_id;
+    ctx.fillText(shortId, cell.col, cell.row - dims.rows * 0.03);
+    ctx.textAlign = 'left';
+  }
+}
+
+function renderFrame(){
+  if (!floorsConfig) { requestAnimationFrame(renderFrame); return; }
+  const dims = floorsConfig[activeFloor];
+  ctx.clearRect(0, 0, dims.cols, dims.rows);
+  drawDevices();
+  drawScaleBar();
+  drawCompass();
+  if (selectedDeviceId) updateSelectedPanel(); // keep "Xs ago" ticking
+  requestAnimationFrame(renderFrame);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   CALIBRATION HOVER + CLICK-TO-SELECT (same screen->cell transform)
+   ════════════════════════════════════════════════════════════════════════ */
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!calibToggle.checked) return;
+  const cell = screenToCell(e.clientX, e.clientY);
+  const mpc = floorsConfig[activeFloor].meters_per_cell;
+  const metersText = mpc
+    ? ` · x=${(cell.col * mpc).toFixed(2)}m y=${(cell.row * mpc).toFixed(2)}m`
+    : '';
+  calibReadout.textContent = `col ${cell.col.toFixed(1)}  row ${cell.row.toFixed(1)}${metersText}`;
+});
+
+canvas.addEventListener('click', (e) => {
+  const dims = floorsConfig[activeFloor];
+  if (dims.meters_per_cell === null || dims.meters_per_cell === undefined) return;
+
+  const clickCell = screenToCell(e.clientX, e.clientY);
+  const map = devicesByFloor[activeFloor];
+
+  let closest = null;
+  let closestDist = Infinity;
+  for (const d of map.values()) {
+    const cell = metersToCell(activeFloor, d.target.x, d.target.y);
+    if (!cell) continue;
+    const dist = Math.hypot(cell.col - clickCell.col, cell.row - clickCell.row);
+    if (dist < closestDist) { closestDist = dist; closest = d; }
+  }
+
+  const HIT_RADIUS_CELLS = dims.rows * 0.04;
+  if (closest && closestDist <= HIT_RADIUS_CELLS) {
+    selectDevice(closest.device_id);
+  } else {
+    clearSelection();
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   BOOT
+   ════════════════════════════════════════════════════════════════════════ */
+
+boot();
+</script>
+</body>
+</html>

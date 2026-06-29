@@ -1,13 +1,26 @@
 services:
   mosquitto:
     image: eclipse-mosquitto:2.1.2-alpine
+    command: mosquitto -c /mosquitto/config/mosquitto.conf
     ports:
       - "1883:1883"
-      # Optional advanced mode for browser MQTT access:
+      # Dashboard now reads live state via FastAPI /ws/live (Redis-backed),
+      # not direct MQTT. Only uncomment 9001 if something needs raw broker
+      # access from a browser again.
       # - "9001:9001"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:rw
       - ./mosquitto/data:/mosquitto/data
+    restart: unless-stopped
+    networks:
+      - ips-network
+
+  redis:
+    image: redis:7-alpine
+    # No host port mapping needed for normal use — server reaches it via
+    # the internal network. Uncomment below only for temporary CLI/GUI access.
+    # ports:
+    #   - "6380:6379"
     restart: unless-stopped
     networks:
       - ips-network
@@ -36,6 +49,10 @@ services:
     build: ./server
     environment:
       MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      LIVE_KEY_TTL_SECONDS: ${LIVE_KEY_TTL_SECONDS:-180}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8080}
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER:-ipsuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ipspass}
@@ -45,6 +62,8 @@ services:
       - "8000:8000"
     depends_on:
       mosquitto:
+        condition: service_started
+      redis:
         condition: service_started
       postgres:
         condition: service_healthy

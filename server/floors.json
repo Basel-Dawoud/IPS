@@ -1,0 +1,22 @@
+{
+  "3": {
+    "cols": 477,
+    "rows": 89,
+    "image": "assets/floor_3.png",
+    "meters_per_cell": null,
+    "origin": {
+      "col": 0,
+      "row": 0
+    }
+  },
+  "4": {
+    "cols": 476,
+    "rows": 99,
+    "image": "assets/floor_4.png",
+    "meters_per_cell": null,
+    "origin": {
+      "col": 0,
+      "row": 0
+    }
+  }
+}

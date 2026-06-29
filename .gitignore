@@ -3,22 +3,21 @@
 
 # Python
 venv/
+.venv/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 *.sqlite3
+
+# Editor temporary files
 *.swp
+*.swo
+*~
 
 # Device simulator state
 device_id.txt
 
 # Mosquitto persistent data
 mosquitto/data/
-device_id.txt
-mosquitto/data/mosquitto.db
-mosquitto/data/mosquitto.db-wal
-mosquitto/data/mosquitto.db-shm
 
 # OS files
 .DS_Store

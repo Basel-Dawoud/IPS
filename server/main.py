@@ -1,137 +1,470 @@
-# Minimal working server example -- This is the REAL backend server.
-# It listens to MQTT messages from the broker, updates live state in Redis (in the future), and saves data to PostgreSQL.
-# connects to MQTT broker - subscribes to device messages - receives positions - stores them in PostgreSQL - can publish commands back
 # server/main.py
+# IPS backend server.
+#
+# Responsibilities:
+#   - Subscribe to MQTT position/status/alert topics
+#   - Write live state to Redis        (latest position/status per device)
+#   - Write full history to TimescaleDB (every position, for analytics)
+#   - Publish ACKs back to the device
+#   - Broadcast live updates to connected dashboards over WebSocket
+#   - Serve REST endpoints for floor metadata and history
+#
+# Contract: docs/MQTT_CONTRACT.md (v1.4)
+#   - position: qos=0, retain=false  → live state belongs in Redis, not the broker
+#   - status:   qos=1, retain=true   → last heartbeat visible immediately
+#   - command:  qos=1, retain=false  → ACKs/alerts must arrive, never replayed
+#
+# Dashboard note:
+#   The dashboard reads live state via WebSocket (/ws/live), backed by
+#   Redis and pushed event-driven (on MQTT arrival), not on a timer. It
+#   gets one full snapshot on connect, then incremental position/status
+#   updates as they happen. It no longer needs direct MQTT broker access.
 
+import asyncio
+import json
+import os
+import time
+from contextlib import asynccontextmanager
 
-import asyncio # MQTT async client library. Used for asynchronous programming, allowing the server to handle multiple tasks concurrently without blocking. For example, it allows the MQTT listener to run in the background while the FastAPI server handles HTTP requests.
-import json # For parsing MQTT message payloads, which are expected to be JSON strings. Python dict <-> JSON string
-import os   # For environment variable access. Reads environment variables.
-import time # For getting the current timestamp when saving device position data to PostgreSQL. Used in the save_to_postgres function to record when the position data was received.
-from contextlib import asynccontextmanager # For managing the lifecycle of the FastAPI application. It allows us to define setup and teardown logic for resources like the PostgreSQL connection pool when the application starts and stops.
+import aiomqtt
+import asyncpg
+import redis.asyncio as redis
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
-import aiomqtt  # Asynchronous MQTT client library. Used to connect to the MQTT broker, subscribe to topics, and receive messages asynchronously. It allows the server to listen for MQTT messages without blocking other operations, such as handling HTTP requests.
-import asyncpg   # Asynchronous PostgreSQL client library. Used to connect to the PostgreSQL database and perform asynchronous database operations, such as inserting device position data. It allows the server to save data to the database without blocking other operations.
-from fastapi import FastAPI # Used here to create a simple web server that can handle HTTP requests. In this code, it's used to create a FastAPI application that has a health check endpoint and manages the lifecycle of the MQTT listener.
+# ── Config ────────────────────────────────────────────────────────────────────
+MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
 
-# Load environment variables from .env file
-MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto") # MQTT broker host, default is "mosquitto"
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres") # PostgreSQL database host, default is "postgres"
-POSTGRES_DB = os.getenv("POSTGRES_DB", "ipsdb") # PostgreSQL database name, default is "ipsdb"
-POSTGRES_USER = os.getenv("POSTGRES_USER", "ipsuser") # PostgreSQL database user, default is "ipsuser"
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ipspass") # PostgreSQL database password, default is "ipspass"
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432") # PostgreSQL database port, default is "5432"
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
 
-# Build one connection string for the async pool
+# How long a live key survives in Redis with no update. After this, a device
+# is considered stale and drops out of /live/positions naturally via TTL.
+LIVE_KEY_TTL_SECONDS = int(os.getenv("LIVE_KEY_TTL_SECONDS", "180"))
+
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "ipsdb")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "ipsuser")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ipspass")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DSN = (
     f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
     f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 )
 
-# Create the async PostgreSQL pool
-pg_pool = None
+# Comma-separated list — e.g. "http://localhost:8080,http://192.168.1.50:8080"
+# Default covers local dev only. Add your demo-day host/IP before presenting
+# from anywhere other than localhost, or /floors and /health will be silently
+# blocked by the browser with no error in the server logs.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080").split(",")
+    if origin.strip()
+]
+
+# Sampling is an OPTIONAL future optimization, OFF by default.
+# When enabled, only 1-in-N position messages would be written to Postgres
+# (Redis and the dashboard broadcast always get every message regardless).
+# Do not turn this on until write volume actually becomes a problem.
+HISTORY_SAMPLING_ENABLED = os.getenv("HISTORY_SAMPLING_ENABLED", "false").lower() == "true"
+HISTORY_SAMPLING_RATE = int(os.getenv("HISTORY_SAMPLING_RATE", "1"))
+
+FLOORS_CONFIG_PATH = os.getenv(
+    "FLOORS_CONFIG_PATH",
+    os.path.join(os.path.dirname(__file__), "floors.json"),
+)
+
+# Comma-separated list — e.g. "http://localhost:8080,http://192.168.1.50:8080"
+# Default covers local dev only. Add your demo-day host/IP before presenting
+# from anywhere other than localhost, or /floors and /health will be silently
+# blocked by the browser with no error in the server logs.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080").split(",")
+    if origin.strip()
+]
+
+# ── Globals (set during lifespan startup) ─────────────────────────────────────
+pg_pool: asyncpg.Pool | None = None
+redis_client: redis.Redis | None = None
+mqtt_connected = False  # flipped by mqtt_loop — see /health
+
+REQUIRED_POSITION_FIELDS = {"device_id", "building_id", "floor", "x", "y"}
+REQUIRED_STATUS_FIELDS = {"device_id"}
+
+ACTIVE_DEVICES_SET = "live:devices"
+_position_counter = 0  # only used if HISTORY_SAMPLING_ENABLED
+
+with open(FLOORS_CONFIG_PATH) as f:
+    FLOORS_CONFIG = json.load(f)
 
 
-async def save_position_to_postgres(data: dict):
-    """Saves the device position data to PostgreSQL database."""
-    global pg_pool
-    if pg_pool is None:
-        raise RuntimeError("PostgreSQL connection pool is not initialized") # Ensure that the PostgreSQL connection pool is initialized before trying to use it. If it's not initialized, raise an error.
-    
-    async with pg_pool.acquire() as conn: # Acquire a connection from the PostgreSQL connection pool. This allows the server to execute SQL commands without blocking other operations, as the connection is managed asynchronously.
+def position_key(device_id: str) -> str:
+    return f"live:position:{device_id}"
+
+
+def status_key(device_id: str) -> str:
+    return f"live:status:{device_id}"
+
+
+# ── WebSocket connection manager ───────────────────────────────────────────────
+
+class ConnectionManager:
+    """
+    Tracks connected dashboards and pushes updates as they happen.
+    No polling loop — broadcast() is called directly from handle_message()
+    the moment a new position/status arrives from MQTT.
+    """
+
+    def __init__(self) -> None:
+        self.active: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active:
+            self.active.remove(websocket)
+
+    async def broadcast(self, message: dict) -> None:
+        dead: list[WebSocket] = []
+        for ws in self.active:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+
+# ── Redis writes (live state) ─────────────────────────────────────────────────
+
+async def save_position_to_redis(data: dict) -> None:
+    """
+    Overwrite the latest known position for this device.
+    TTL means a device that stops publishing disappears from /live/positions
+    automatically — no manual cleanup needed.
+    """
+    device_id = data["device_id"]
+    await redis_client.set(position_key(device_id), json.dumps(data), ex=LIVE_KEY_TTL_SECONDS)
+    await redis_client.sadd(ACTIVE_DEVICES_SET, device_id)
+
+
+async def save_status_to_redis(data: dict) -> None:
+    device_id = data["device_id"]
+    await redis_client.set(status_key(device_id), json.dumps(data), ex=LIVE_KEY_TTL_SECONDS)
+    await redis_client.sadd(ACTIVE_DEVICES_SET, device_id)
+
+
+# ── PostgreSQL writes (history) ────────────────────────────────────────────────
+
+async def save_position_to_postgres(data: dict) -> None:
+    """
+    Insert one row into the device_positions hypertable.
+    zone_id is optional in the contract — stored as NULL if absent.
+    """
+    async with pg_pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO device_positions (device_id, building_id, floor, x, y, ts)
-            VALUES ($1, $2, $3, $4, $5, to_timestamp($6))
+            INSERT INTO device_positions
+                (ts, device_id, building_id, floor, zone_id, x, y)
+            VALUES
+                (to_timestamp($1), $2, $3, $4, $5, $6, $7)
             """,
+            int(data.get("ts", time.time())),
             data["device_id"],
             data["building_id"],
             data["floor"],
+            data.get("zone_id"),
             data["x"],
             data["y"],
-            int(data.get("ts", time.time())), # Use the timestamp from the data if available, otherwise use the current time. This ensures that the position data is recorded with an accurate timestamp in the database.
         )
-        print(f"Saved position to PostgreSQL for device {data['device_id']}")
 
-# MQTT loop runs in the background, listening to device messages and updating live state in Redis and saving to PostgreSQL.
-async def mqtt_loop(): # main server event loop
-    while True: # This loop runs indefinitely, allowing the server to continuously listen for MQTT messages. The server will keep running and processing incoming MQTT messages until it is stopped or encounters an error.
+
+def should_write_to_history() -> bool:
+    if not HISTORY_SAMPLING_ENABLED:
+        return True
+    global _position_counter
+    _position_counter += 1
+    return _position_counter % HISTORY_SAMPLING_RATE == 0
+
+
+# ── MQTT publish helpers ───────────────────────────────────────────────────────
+
+async def publish_ack(client: aiomqtt.Client, data: dict, status: str) -> None:
+    reply_topic = f'ips/{data["building_id"]}/device/{data["device_id"]}/command'
+    reply = {
+        "type": "ack",
+        "status": status,
+        "device_id": data["device_id"],
+        "ts": int(time.time()),
+    }
+    await client.publish(reply_topic, json.dumps(reply), qos=1, retain=False)
+
+
+# ── MQTT message handling ──────────────────────────────────────────────────────
+
+async def handle_message(client: aiomqtt.Client, message: aiomqtt.Message) -> None:
+    topic = str(message.topic)
+
+    try:
+        data = json.loads(message.payload.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"[WARN] Bad payload on {topic}, skipping: {e}")
+        return
+
+    if topic.endswith("/position"):
+        if not REQUIRED_POSITION_FIELDS.issubset(data):
+            print(f"[WARN] Missing fields in position payload, skipping: {data}")
+            return
+
+        # Live state is the part that must succeed for the ack to say "stored".
         try:
-            print("Connecting to MQTT broker...") # Log message indicating that the server is attempting to connect to the MQTT broker. This is useful for debugging and monitoring purposes.
-            async with aiomqtt.Client(MQTT_HOST, port=1883) as client: # Connect to MQTT broker "TCP connection to broker"
-                await client.subscribe("ips/+/device/+/position") # Listen for all position updates
-                print("Subscribed to MQTT topic: ips/+/device/+/position") # Log message indicating that the server has successfully subscribed to the MQTT topic. This confirms that the server is now listening for position updates from devices.
-
-                await client.subscribe("ips/+/device/+/status") # Listen for device status updates (optional, for future use)
-                print("Subscribed to MQTT topic: ips/+/device/+/status") # Log message
-
-                await client.subscribe("ips/+/device/+/alert") # Listen for device alerts (optional, for future use)
-                print("Subscribed to MQTT topic: ips/+/device/+/alert") # Log message
-
-                async for message in client.messages: # This waits asynchronously for new MQTT messages.
-                    try:
-                        payload = message.payload.decode() # bytes -> string. MQTT payload arrives as bytes.
-                        data = json.loads(payload) # string -> dict. Parse the JSON string into a Python dictionary.
-                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                        print(f"Bad message format, skipping: {e}")
-                        continue  # ← skip this message, keep the loop alive
-                    required = {"device_id", "building_id", "floor", "x", "y"}
-                    if not required.issubset(data.keys()):
-                        print(f"Missing fields in payload, skipping: {data}")
-                        continue  # ← skip, don't crash
-                    print(f"Received MQTT message on topic {message.topic}: {data}") # Log the received message for debugging purposes.
-                    
-                    # Save to DB
-                    await save_position_to_postgres(data) # Save the device position data to PostgreSQL database.
-                    
-                    # Reply topic where we can send commands back to the device if needed.
-                    reply_topic = f'ips/{data["building_id"]}/device/{data["device_id"]}/command'
-                    reply = {
-                        "type": "ack",
-                        "status": "stored",
-                        "device_id": data["device_id"],
-                    }
-                    await client.publish(reply_topic, json.dumps(reply))
-                    print(f"Sent MQTT reply to topic {reply_topic}: {reply}") # Log the sent reply for debugging purposes.
-                    
+            await save_position_to_redis(data)
         except Exception as e:
-            print(f"Error in MQTT loop: {e}") # Log any exceptions that occur in the MQTT loop for debugging purposes. This helps identify issues with the MQTT connection or message processing.
-            print("Reconnecting to MQTT broker in 5 seconds...") # Log message indicating that the server will attempt to reconnect to the MQTT broker after a delay. This is useful for handling temporary connection issues.
-            await asyncio.sleep(5) # Wait before retrying to connect to the MQTT broker. This prevents the server from continuously trying to reconnect in case of a persistent issue, allowing time for the broker to recover or for network issues to be resolved.
+            print(f"[ERR] Redis write failed for {data.get('device_id')}: {e}")
+            await publish_ack(client, data, "error")
+            return
+
+        # Live state is correct now — tell connected dashboards immediately.
+        await manager.broadcast({"type": "position", **data})
+
+        # History write is best-effort. A failure here is logged but does
+        # NOT flip the ack to "error" — the live pipeline already succeeded,
+        # only the analytics record is missing for this one sample.
+        if should_write_to_history():
+            try:
+                await save_position_to_postgres(data)
+            except Exception as e:
+                print(f"[WARN] History write failed for {data.get('device_id')}: {e}")
+
+        await publish_ack(client, data, "stored")
+
+    elif topic.endswith("/status"):
+        if not REQUIRED_STATUS_FIELDS.issubset(data):
+            print(f"[WARN] Missing fields in status payload, skipping: {data}")
+            return
+
+        try:
+            await save_status_to_redis(data)
+        except Exception as e:
+            print(f"[ERR] Redis write failed for {data.get('device_id')}: {e}")
+            await publish_ack(client, data, "error")
+            return
+
+        await manager.broadcast({"type": "status", **data})
+        await publish_ack(client, data, "status-updated")
+
+    else:
+        print(f"[WARN] Unhandled topic: {topic}")
+
+
+# ── MQTT loop ───────────────────────────────────────────────────────────────────
+
+async def mqtt_loop() -> None:
+    global mqtt_connected
+    while True:
+        try:
+            print("[MQTT] Connecting to broker...")
+            async with aiomqtt.Client(MQTT_HOST, port=1883) as client:
+                await client.subscribe("ips/+/device/+/position", qos=0)
+                await client.subscribe("ips/+/device/+/status", qos=1)
+                mqtt_connected = True
+                print("[MQTT] Subscribed to position and status topics.")
+
+                async for message in client.messages:
+                    await handle_message(client, message)
+
+        except Exception as e:
+            mqtt_connected = False
+            print(f"[MQTT] Error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+
+# ── Live snapshot (used once, on WebSocket connect) ────────────────────────────
+
+async def fetch_live_positions() -> dict:
+    """
+    Current position of every device known to be active. Source: Redis.
+    Self-prunes device_ids whose position key has already expired via TTL.
+    """
+    device_ids = sorted(await redis_client.smembers(ACTIVE_DEVICES_SET))
+
+    if not device_ids:
+        return {"count": 0, "items": []}
+
+    keys = [position_key(device_id) for device_id in device_ids]
+    raw_values = await redis_client.mget(keys)
+
+    items = []
+    stale_ids = []
+    for device_id, raw in zip(device_ids, raw_values):
+        if raw:
+            items.append(json.loads(raw))
+        else:
+            stale_ids.append(device_id)
+
+    if stale_ids:
+        await redis_client.srem(ACTIVE_DEVICES_SET, *stale_ids)
+
+    items.sort(key=lambda item: int(item.get("ts", 0)), reverse=True)
+    return {"count": len(items), "items": items}
+
+
+# ── Lifespan ─────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pg_pool
-    # Initialize PostgreSQL connection pool when the application starts.
-    # Retry pool creation up to 5 times
+    global pg_pool, redis_client
+
     for attempt in range(5):
         try:
             pg_pool = await asyncpg.create_pool(POSTGRES_DSN, min_size=1, max_size=5)
-            print("PostgreSQL connection pool created")
+            print("[DB] PostgreSQL pool created.")
             break
         except Exception as e:
-            print(f"Postgres not ready (attempt {attempt+1}/5): {e}")
+            print(f"[DB] Not ready (attempt {attempt + 1}/5): {e}")
             await asyncio.sleep(3)
     else:
-        raise RuntimeError("Could not connect to PostgreSQL after 5 attempts")
+        raise RuntimeError("Could not connect to PostgreSQL after 5 attempts.")
 
-    task = asyncio.create_task(mqtt_loop()) # Start the MQTT loop as a background task. This allows the server to listen for MQTT messages while still being able to handle HTTP requests and other operations concurrently.
+    for attempt in range(5):
+        try:
+            redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            print("[REDIS] Client connected.")
+            break
+        except Exception as e:
+            print(f"[REDIS] Not ready (attempt {attempt + 1}/5): {e}")
+            await asyncio.sleep(3)
+    else:
+        raise RuntimeError("Could not connect to Redis after 5 attempts.")
+
+    task = asyncio.create_task(mqtt_loop(), name="mqtt_loop")
+
     try:
-        yield # This allows the application to run while the connection pool is active. The code before this line runs when the application starts, and the code after this line runs when the application shuts down.
+        yield
     finally:
-        # Cleanup resources when the application shuts down.
-        task.cancel() # Cancel the MQTT loop task to stop it from running when the application is shutting down. This ensures that the server can cleanly exit without leaving background tasks running.
-        await pg_pool.close() # Close the PostgreSQL connection pool to release database connections and clean
-        print("PostgreSQL connection pool closed") # Log message indicating that the PostgreSQL connection pool has been closed. This confirms that the server has successfully cleaned up its resources during shutdown.
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
-app = FastAPI(lifespan=lifespan) # Create a FastAPI application instance. This is the main entry point for the web server, allowing us to define routes and manage the application's lifecycle.
+        await pg_pool.close()
+        print("[DB] PostgreSQL pool closed.")
 
-# Creates the HTTP server.
-# Later:
-# REST APIs - admin dashboard - health checks - analytics APIs
+        close = getattr(redis_client, "aclose", None)
+        if callable(close):
+            await close()
+        print("[REDIS] Client closed.")
 
-# Health check endpoint to verify that the server is running.
+
+# ── App ────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.get("/health")
-async def health_check():
-    return {"status": "ok"} # Simple health check endpoint that returns a JSON response indicating that the server is running. This can be used by monitoring tools to check the health of the server.
+async def health():
+    """
+    Subsystem connectivity for the dashboard's status strip.
+    mqtt_connected reflects the live subscribe loop's current state.
+    redis_connected/postgres_connected reflect whether the pool was
+    established at startup — not a live ping on every request.
+    """
+    return {
+        "status": "ok",
+        "mqtt_connected": mqtt_connected,
+        "redis_connected": redis_client is not None,
+        "postgres_connected": pg_pool is not None,
+    }
 
+
+@app.get("/floors")
+async def floors():
+    """
+    Single source of truth for floor metadata: grid dimensions, the
+    background image to load, and the meters_per_cell calibration value
+    (null until someone calibrates it via the dashboard's hover tool and
+    edits server/floors.json).
+    """
+    return FLOORS_CONFIG
+
+
+@app.get("/live/positions")
+async def live_positions():
+    """REST snapshot — same data the WebSocket sends on connect, for debugging."""
+    return await fetch_live_positions()
+
+
+@app.get("/live/status/{device_id}")
+async def live_status(device_id: str):
+    """Latest heartbeat for one device. Source: Redis."""
+    raw = await redis_client.get(status_key(device_id))
+    if raw is None:
+        return {"device_id": device_id, "found": False}
+    return {"device_id": device_id, "found": True, "status": json.loads(raw)}
+
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    """
+    Push-only endpoint. Sends one full snapshot on connect, then incremental
+    position/status updates via ConnectionManager.broadcast() as MQTT events
+    arrive — there is no timer here, broadcast() is called directly from
+    handle_message().
+
+    This coroutine itself does nothing but wait for the client to disconnect.
+    It never expects or processes inbound messages, so it uses receive()
+    rather than receive_text() — no assumption about frame type, just a
+    passive wait that raises WebSocketDisconnect when the client goes away.
+    """
+    await manager.connect(websocket)
+    try:
+        snapshot = await fetch_live_positions()
+        await websocket.send_json({"type": "snapshot", "items": snapshot["items"]})
+
+        while True:
+            await websocket.receive()
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(websocket)
+
+
+@app.get("/history/device/{device_id}")
+async def device_history(
+    device_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    """Position history for one device, most recent first. Source: TimescaleDB."""
+    async with pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ts, device_id, building_id, floor, zone_id, x, y
+            FROM device_positions
+            WHERE device_id = $1
+            ORDER BY ts DESC
+            LIMIT $2
+            """,
+            device_id,
+            limit,
+        )
+    return {"device_id": device_id, "count": len(rows), "items": [dict(r) for r in rows]}
+
+
+# ── Planned next phase ─────────────────────────────────────────────────────────
+# GET  /analytics/heatmap        → crowd_analytics continuous aggregate
+# GET  /analytics/floor/{floor}  → crowd_analytics filtered by floor

@@ -1,35 +1,38 @@
-.PHONY: help up down reset simulate logs db ps
+# Makefile — IPS Project
+# Usage: make <target>
 
 PYTHON ?= ./venv/bin/python
-COMPOSE ?= docker compose
 
-help:
-	@echo "make up        - build and start the stack"
-	@echo "make down      - stop the stack"
-	@echo "make reset     - stop, remove volumes, and rebuild"
-	@echo "make simulate  - run phone.py"
-	@echo "make logs      - follow server logs"
-	@echo "make db        - open psql inside the postgres container"
-	@echo "make ps        - show container status"
+.PHONY: up down reset simulate render-maps logs db redis-cli ps test
 
 up:
-	$(COMPOSE) up --build
+	docker compose up --build
 
 down:
-	$(COMPOSE) down --remove-orphans
+	docker compose down --remove-orphans
 
 reset:
-	$(COMPOSE) down --remove-orphans --volumes
-	$(COMPOSE) up --build
+	docker compose down --remove-orphans --volumes
+	docker compose up --build -d
+
+render-maps:
+	$(PYTHON) tools/render_floor_maps.py
 
 simulate:
 	$(PYTHON) phone.py
 
 logs:
-	$(COMPOSE) logs -f server
+	docker compose logs -f server
 
 db:
-	$(COMPOSE) exec postgres psql -U ipsuser -d ipsdb
+	docker compose exec postgres psql -U ipsuser -d ipsdb
+
+redis-cli:
+	docker compose exec redis redis-cli
 
 ps:
-	$(COMPOSE) ps
+	docker compose ps
+
+test:
+	curl -s http://localhost:8000/health | $(PYTHON) -m json.tool
+	curl -s http://localhost:8000/live/positions | $(PYTHON) -m json.tool
