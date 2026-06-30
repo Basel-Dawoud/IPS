@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import path from "path";
+import { UPLOADS_ROOT } from "./lib/upload";
 
 dotenv.config();
 
@@ -9,6 +11,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+
+// Serve uploaded floor plan images (backend/uploads → /uploads/...).
+app.use("/uploads", express.static(UPLOADS_ROOT));
 +app.get("/", (req, res) => {
   res.send("Indoor Positioning System API");
 });
@@ -20,6 +25,8 @@ import clientFloorRoutes from "./modules/client/floors/floors.routes";
 import adminBeaconRoutes from "./modules/admin/beacons/beacons.routes";
 import clientPositioningRoutes from "./modules/client/positioning/positioning.routes";
 import adminMapRoutes from "./modules/admin/map/map.routes";
+import adminPoiRoutes from "./modules/admin/pois/pois.routes";
+import clientPoiRoutes from "./modules/client/pois/pois.routes";
 import clientNavigationRoutes from "./modules/client/navigation/navigation.routes";
 import adminFingerprintingRoutes from "./modules/admin/fingerprinting/fingerprinting.routes";
 import adminTrajectoryRoutes from "./modules/admin/trajectory/trajectory.routes";
@@ -37,6 +44,8 @@ app.use("/api/client/floors", clientFloorRoutes);
 app.use("/api/admin/beacons", adminBeaconRoutes);
 app.use("/api/client/positioning", clientPositioningRoutes);
 app.use("/api/admin/map", adminMapRoutes);
+app.use("/api/admin/pois", adminPoiRoutes);
+app.use("/api/client/pois", clientPoiRoutes);
 app.use("/api/client/navigation", clientNavigationRoutes);
 app.use("/api/admin/fingerprinting", adminFingerprintingRoutes);
 app.use("/api/admin/trajectory", adminTrajectoryRoutes);

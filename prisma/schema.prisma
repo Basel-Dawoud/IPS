@@ -52,6 +52,31 @@ model Floor {
   name   String
   mapUrl String? // URL to the floor plan image
 
+  // Real-world extent of the floor plan, used by the dashboard POI picker to
+  // map a click on the plan image to (x, y) meters. Derived from the calibration
+  // below (imageWidthPx * metersPerPixel, imageHeightPx * metersPerPixel); kept
+  // denormalized for the picker. Null until the floor is calibrated.
+  widthMeters  Float?
+  heightMeters Float?
+
+  // Pixel↔meter calibration for the plan image (moved out of the app's
+  // hardcoded constants). `imageWidthPx`/`imageHeightPx` are the natural
+  // (as-uploaded) pixel dimensions; `metersPerPixel` is the uniform scale;
+  // `rotationDeg` (0/90/180/270) is how the image is rotated relative to the
+  // model coordinate frame; `originXm`/`originYm` offset the image's top-left
+  // from the world origin in meters.
+  imageWidthPx   Int?
+  imageHeightPx  Int?
+  metersPerPixel Float?
+  rotationDeg    Int   @default(0)
+  originXm       Float @default(0)
+  originYm       Float @default(0)
+
+  // Vector floor map derived from an uploaded `.npy` grid: merged wall/corridor
+  // rectangles + per-room polygons in METER coords, rendered as crisp SVG by the
+  // app. Null for floors uploaded as raster images (those use mapUrl instead).
+  vectorMap Json?
+
   // Reverse relations
   // Note: Some relations are defined on the other side, but we can add them here for convenience if needed.
   // For now, we rely on the building-level relations + floorLevel filtering, 
@@ -365,13 +390,25 @@ model Poi {
   floorLevel Int
 
   name String
-  code String? // room number (e.g. "C3-305")
+  code String? // room number (e.g. "C3-305") or store id (e.g. "351")
   type PoiType
 
   x Float
   y Float
 
+  // Catalog / chatbot metadata. Lets the navigation POI double as the store
+  // record the chatbot answers from, so both features share one source of truth.
+  description     String? // human-readable store description
+  category        String? // store cluster, e.g. "Computer Systems Hub"
+  aliases         String[] @default([]) // multilingual search aliases
+  productKeywords String[] @default([]) // product keywords that resolve to this POI
+
+  active Boolean @default(true)
+
   node MapNode[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([buildingId, floorLevel])
 }
