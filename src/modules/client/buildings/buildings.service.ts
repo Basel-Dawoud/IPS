@@ -13,6 +13,11 @@ export const getBuildingById = async (id: string) => {
     where: { id },
     include: {
       floors: true,
+
+      beacons: {
+        where: { active: true },
+        select: { beaconUid: true, serviceData: true, floorLevel: true },
+      },
     },
   });
 };
@@ -82,7 +87,10 @@ export const getNearbyBuildings = async (
       try {
         const parsed = JSON.parse(r.centroid_geojson);
         if (parsed?.type === "Point" && Array.isArray(parsed.coordinates)) {
-          centroid = { lng: Number(parsed.coordinates[0]), lat: Number(parsed.coordinates[1]) };
+          centroid = {
+            lng: Number(parsed.coordinates[0]),
+            lat: Number(parsed.coordinates[1]),
+          };
         }
       } catch {
         // ignore malformed GeoJSON

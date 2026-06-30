@@ -6,6 +6,7 @@ export interface CreatePoiInput {
   name: string;
   code?: string;
   type: PoiType;
+  iconUrl?: string;
   x: number;
   y: number;
   description?: string;
@@ -20,6 +21,7 @@ export interface UpdatePoiInput {
   name?: string;
   code?: string;
   type?: PoiType;
+  iconUrl?: string;
   x?: number;
   y?: number;
   description?: string;

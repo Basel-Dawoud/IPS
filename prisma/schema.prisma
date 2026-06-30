@@ -393,6 +393,10 @@ model Poi {
   code String? // room number (e.g. "C3-305") or store id (e.g. "351")
   type PoiType
 
+  // Per-POI marker icon (compressed WebP, served from /uploads/pois). When set,
+  // the app/dashboard render this image instead of the default dot marker.
+  iconUrl String?
+
   x Float
   y Float
 

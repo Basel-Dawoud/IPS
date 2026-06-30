@@ -35,3 +35,10 @@ export const deletePoi = async (id: string) => {
     where: { id },
   });
 };
+
+export const setPoiIcon = async (id: string, iconUrl: string) => {
+  return prisma.poi.update({
+    where: { id },
+    data: { iconUrl },
+  });
+};

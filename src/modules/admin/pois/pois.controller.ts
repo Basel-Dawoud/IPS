@@ -1,6 +1,9 @@
 import { Request, Response } from "express";
+import path from "path";
+import sharp from "sharp";
 import * as poiService from "./pois.service";
 import { createPoiSchema, updatePoiSchema } from "./pois.schema";
+import { POIS_UPLOAD_DIR, publicUrlForPoiIcon } from "../../../lib/upload";
 import {
   sendSuccess,
   sendCreated,
@@ -70,6 +73,32 @@ export const updatePoi = async (req: Request, res: Response) => {
       return sendNotFound(res, "POI");
     }
     return sendServerError(res, "Failed to update POI");
+  }
+};
+
+export const uploadPoiIcon = async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return sendBadRequest(res, "No file uploaded (use multipart field 'icon')");
+    }
+    const { id } = req.params;
+
+    const existing = await poiService.getPoiById(id);
+    if (!existing) {
+      return sendNotFound(res, "POI");
+    }
+
+    // Compress + resize into a small square-ish WebP marker.
+    const filename = `${id}-${Date.now()}.webp`;
+    await sharp(req.file.buffer)
+      .resize(128, 128, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toFile(path.join(POIS_UPLOAD_DIR, filename));
+
+    const poi = await poiService.setPoiIcon(id, publicUrlForPoiIcon(filename));
+    return sendSuccess(res, poi, 200, "POI icon uploaded");
+  } catch (error) {
+    return sendServerError(res, "Failed to process POI icon");
   }
 };
 
