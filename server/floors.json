@@ -2,21 +2,209 @@
   "3": {
     "cols": 477,
     "rows": 89,
-    "image": "assets/floor_3.png",
-    "meters_per_cell": null,
+    "image": "assets/floor_3.svg",
+    "meters_per_cell": 1.0,
     "origin": {
       "col": 0,
       "row": 0
-    }
+    },
+    "corridor_rows": [
+      31,
+      44
+    ],
+    "rooms": [
+      {
+        "id": "358",
+        "name": "Health & Personal Care",
+        "col_start": 48,
+        "col_end": 120,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "357",
+        "name": "Laptop Accessories",
+        "col_start": 124,
+        "col_end": 194,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "356",
+        "name": "Gaming",
+        "col_start": 197,
+        "col_end": 236,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "355",
+        "name": "Smart Wearables",
+        "col_start": 268,
+        "col_end": 302,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "354",
+        "name": "Smart Home Automation",
+        "col_start": 305,
+        "col_end": 339,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "353",
+        "name": "Storage",
+        "col_start": 342,
+        "col_end": 376,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "352",
+        "name": "Mobile & Tablets Hub",
+        "col_start": 379,
+        "col_end": 413,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "351",
+        "name": "Computer Systems Hub",
+        "col_start": 416,
+        "col_end": 450,
+        "row_start": 47,
+        "row_end": 85
+      },
+      {
+        "id": "350",
+        "name": "Smart Devices Hub",
+        "col_start": 453,
+        "col_end": 474,
+        "row_start": 47,
+        "row_end": 85
+      }
+    ]
   },
   "4": {
     "cols": 476,
     "rows": 99,
-    "image": "assets/floor_4.png",
-    "meters_per_cell": null,
+    "image": "assets/floor_4.svg",
+    "meters_per_cell": 1.0,
     "origin": {
       "col": 0,
       "row": 0
-    }
+    },
+    "corridor_rows": [
+      39,
+      52
+    ],
+    "rooms": [
+      {
+        "id": "462",
+        "name": "Pet and Gardening",
+        "col_start": 2,
+        "col_end": 34,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "461",
+        "name": "Cleaning and Bath",
+        "col_start": 38,
+        "col_end": 71,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "460",
+        "name": "Lighting and Electricals",
+        "col_start": 74,
+        "col_end": 107,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "459",
+        "name": "Tools and utility",
+        "col_start": 111,
+        "col_end": 143,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "458",
+        "name": "Home Decor",
+        "col_start": 147,
+        "col_end": 180,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "457",
+        "name": "Kitchen and Dining",
+        "col_start": 183,
+        "col_end": 216,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "456",
+        "name": "Furnishings",
+        "col_start": 219,
+        "col_end": 252,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "455",
+        "name": "Bathroom",
+        "col_start": 256,
+        "col_end": 289,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "454",
+        "name": "Dining Room",
+        "col_start": 292,
+        "col_end": 325,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "453",
+        "name": "Kitchen",
+        "col_start": 328,
+        "col_end": 368,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "452",
+        "name": "Study/Office",
+        "col_start": 371,
+        "col_end": 411,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "451",
+        "name": "Living Room",
+        "col_start": 414,
+        "col_end": 443,
+        "row_start": 55,
+        "row_end": 95
+      },
+      {
+        "id": "450",
+        "name": "Bedroom",
+        "col_start": 446,
+        "col_end": 473,
+        "row_start": 55,
+        "row_end": 95
+      }
+    ]
   }
 }

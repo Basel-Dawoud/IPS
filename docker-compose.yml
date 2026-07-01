@@ -40,6 +40,7 @@ services:
       - "5434:5432"
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql
+      - ./db/02-rooms.sql:/docker-entrypoint-initdb.d/02-rooms.sql
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:

@@ -75,16 +75,6 @@ FLOORS_CONFIG_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "floors.json"),
 )
 
-# Comma-separated list — e.g. "http://localhost:8080,http://192.168.1.50:8080"
-# Default covers local dev only. Add your demo-day host/IP before presenting
-# from anywhere other than localhost, or /floors and /health will be silently
-# blocked by the browser with no error in the server logs.
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080").split(",")
-    if origin.strip()
-]
-
 # ── Globals (set during lifespan startup) ─────────────────────────────────────
 pg_pool: asyncpg.Pool | None = None
 redis_client: redis.Redis | None = None
@@ -166,21 +156,24 @@ async def save_status_to_redis(data: dict) -> None:
 async def save_position_to_postgres(data: dict) -> None:
     """
     Insert one row into the device_positions hypertable.
-    zone_id is optional in the contract — stored as NULL if absent.
+    zone_id and room_id are both optional — stored as NULL if absent.
+    room_id (nearest store/room, from phone.py's floors.json lookup) feeds
+    the room_visits continuous aggregate used by /analytics/rooms.
     """
     async with pg_pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO device_positions
-                (ts, device_id, building_id, floor, zone_id, x, y)
+                (ts, device_id, building_id, floor, zone_id, room_id, x, y)
             VALUES
-                (to_timestamp($1), $2, $3, $4, $5, $6, $7)
+                (to_timestamp($1), $2, $3, $4, $5, $6, $7, $8)
             """,
             int(data.get("ts", time.time())),
             data["device_id"],
             data["building_id"],
             data["floor"],
             data.get("zone_id"),
+            data.get("room_id"),
             data["x"],
             data["y"],
         )
@@ -453,7 +446,7 @@ async def device_history(
     async with pg_pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT ts, device_id, building_id, floor, zone_id, x, y
+            SELECT ts, device_id, building_id, floor, zone_id, room_id, x, y
             FROM device_positions
             WHERE device_id = $1
             ORDER BY ts DESC
@@ -465,6 +458,138 @@ async def device_history(
     return {"device_id": device_id, "count": len(rows), "items": [dict(r) for r in rows]}
 
 
-# ── Planned next phase ─────────────────────────────────────────────────────────
-# GET  /analytics/heatmap        → crowd_analytics continuous aggregate
-# GET  /analytics/floor/{floor}  → crowd_analytics filtered by floor
+@app.get("/rooms")
+async def rooms(floor: int | None = Query(default=None)):
+    """
+    Static room directory: id, name, and grid bounding box per room.
+    Source: server/floors.json (same data baked into the SVG labels and
+    seeded into the Postgres `rooms` table by tools/render_floor_maps.py).
+    Pass ?floor=3 to filter to one floor.
+    """
+    result = []
+    for floor_key, cfg in FLOORS_CONFIG.items():
+        if floor is not None and int(floor_key) != floor:
+            continue
+        for room in cfg.get("rooms", []):
+            result.append({**room, "floor": int(floor_key)})
+    return {"count": len(result), "items": result}
+
+
+@app.get("/analytics/floor/{floor}")
+async def analytics_floor_occupancy(
+    floor: int,
+    minutes: int = Query(default=60, ge=5, le=1440),
+):
+    """
+    Occupancy time series for one floor over the last `minutes`, bucketed
+    every 5 minutes. Source: crowd_analytics continuous aggregate.
+    Powers the dashboard's occupancy-over-time chart.
+    """
+    async with pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT bucket, device_count
+            FROM crowd_analytics
+            WHERE floor = $1
+              AND bucket >= NOW() - ($2 || ' minutes')::interval
+            ORDER BY bucket ASC
+            """,
+            floor,
+            str(minutes),
+        )
+    return {
+        "floor": floor,
+        "minutes": minutes,
+        "items": [{"bucket": r["bucket"].isoformat(), "device_count": r["device_count"]} for r in rows],
+    }
+
+
+@app.get("/analytics/rooms")
+async def analytics_room_traffic(
+    floor: int | None = Query(default=None),
+    minutes: int = Query(default=60, ge=5, le=1440),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """
+    Per-room visit counts over the last `minutes`, summed across buckets and
+    ranked highest first. Source: room_visits continuous aggregate, joined
+    against the rooms table for display names.
+    Powers the dashboard's "most visited stores" panel.
+    """
+    async with pg_pool.acquire() as conn:
+        if floor is not None:
+            rows = await conn.fetch(
+                """
+                SELECT rv.room_id, r.name, rv.floor, SUM(rv.visit_count) AS total_visits
+                FROM room_visits rv
+                JOIN rooms r ON r.room_id = rv.room_id
+                WHERE rv.bucket >= NOW() - ($1 || ' minutes')::interval
+                  AND rv.floor = $2
+                GROUP BY rv.room_id, r.name, rv.floor
+                ORDER BY total_visits DESC
+                LIMIT $3
+                """,
+                str(minutes), floor, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT rv.room_id, r.name, rv.floor, SUM(rv.visit_count) AS total_visits
+                FROM room_visits rv
+                JOIN rooms r ON r.room_id = rv.room_id
+                WHERE rv.bucket >= NOW() - ($1 || ' minutes')::interval
+                GROUP BY rv.room_id, r.name, rv.floor
+                ORDER BY total_visits DESC
+                LIMIT $2
+                """,
+                str(minutes), limit,
+            )
+    return {
+        "minutes": minutes,
+        "items": [
+            {
+                "room_id": r["room_id"],
+                "name": r["name"],
+                "floor": r["floor"],
+                "total_visits": int(r["total_visits"]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/analytics/heatmap")
+async def analytics_heatmap(
+    floor: int = Query(...),
+    minutes: int = Query(default=60, ge=5, le=1440),
+):
+    """
+    Per-room visit intensity for one floor, normalized 0-1 against the
+    busiest room in the window. Source: room_visits continuous aggregate.
+    The dashboard tints each room's bounding box (from /rooms) using this
+    intensity when "heatmap mode" is toggled on.
+    """
+    async with pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT room_id, SUM(visit_count) AS total_visits
+            FROM room_visits
+            WHERE floor = $1
+              AND bucket >= NOW() - ($2 || ' minutes')::interval
+            GROUP BY room_id
+            """,
+            floor, str(minutes),
+        )
+
+    counts = {r["room_id"]: int(r["total_visits"]) for r in rows}
+    peak = max(counts.values(), default=0)
+
+    items = [
+        {
+            "room_id": room_id,
+            "total_visits": count,
+            "intensity": round(count / peak, 3) if peak > 0 else 0.0,
+        }
+        for room_id, count in counts.items()
+    ]
+    return {"floor": floor, "minutes": minutes, "peak_visits": peak, "items": items}

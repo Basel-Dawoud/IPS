@@ -1,0 +1,15 @@
+# requirements.txt — for the LOCAL venv only (./venv), used to run:
+#   - phone.py            (the MQTT simulator — needs aiomqtt + numpy)
+#   - tools/*.py           (floor map rendering/inspection — needs numpy,
+#                            Pillow, and matplotlib for the ASCII/plot inspector)
+#
+# This is NOT used by the server container — server/requirements.txt covers
+# that build independently (FastAPI, asyncpg, redis, etc). Keeping these
+# separate means the Docker image stays small and doesn't pull in numpy/
+# matplotlib it never uses, while the host venv stays light enough that the
+# simulator starts in under a second.
+
+aiomqtt==2.3.0
+numpy>=1.26,<3
+pillow>=10.0
+matplotlib>=3.8

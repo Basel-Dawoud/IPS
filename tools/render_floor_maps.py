@@ -2,26 +2,29 @@
 tools/render_floor_maps.py
 
 Offline build utility — NOT part of the running dashboard or server.
-Converts the real floor grid arrays (.npy) into blueprint-styled PNGs, and
-keeps server/floors.json in sync with each floor's real dimensions.
 
-Re-run this whenever the navigation team regenerates floor_*_grid.npy.
+Generates, from the real floor grid arrays (maps/floor_*_grid.npy):
+  1. dashboard/assets/floor_*.svg   — lossless vector floor plans with
+     room number + store name labels baked in (Google-Maps style, bottom
+     of each labeled room), plus a subtle corridor highlight.
+  2. dashboard/assets/floor_*.png   — raster preview, kept for any tooling
+     that prefers a bitmap (e.g. quick image viewers, older browsers).
+  3. server/floors.json             — single source of truth for floor
+     metadata: dimensions, corridor_rows, meters_per_cell, the room
+     directory (id/name/bounding box). Preserves any manually-calibrated
+     meters_per_cell / origin across re-renders.
+  4. db/02-rooms.sql                — generated seed for the `rooms` table,
+     produced from the exact same Room objects used for the SVG labels and
+     floors.json, so the database and the frontend can never drift apart.
 
-floors.json is the single source of truth for floor metadata, served by
-the backend at GET /floors. This script only ever touches the `cols`,
-`rows`, and `image` fields — it never overwrites `meters_per_cell` or
-`origin`, since those are manually calibrated values (see the in-dashboard
-calibration tool) that must survive across re-renders.
-
-Grid cell values (observed in the current files):
-    0 = open / walkable floor
-    1 = wall / structure
-    2 = tagged zone, type 2   (semantics not yet confirmed by nav team)
-    3 = tagged zone, type 3   (semantics not yet confirmed by nav team)
+Re-run this whenever the navigation team regenerates floor_*_grid.npy, or
+whenever ROOM_DIRECTORY in tools/floor_geometry.py changes.
 
 Usage:
     python tools/render_floor_maps.py
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -29,41 +32,45 @@ import os
 import numpy as np
 from PIL import Image
 
-# ── Source grids ──────────────────────────────────────────────────────────────
+import floor_geometry as geo
+
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 GRIDS = {
-    "3": os.path.join(BASE_DIR, "maps", "floor_3_grid.npy"),
-    "4": os.path.join(BASE_DIR, "maps", "floor_4_grid.npy"),
+    3: os.path.join(BASE_DIR, "maps", "floor_3_grid.npy"),
+    4: os.path.join(BASE_DIR, "maps", "floor_4_grid.npy"),
 }
 
 ASSETS_DIR = os.path.join(BASE_DIR, "dashboard", "assets")
 FLOORS_JSON_PATH = os.path.join(BASE_DIR, "server", "floors.json")
+ROOMS_SQL_PATH = os.path.join(BASE_DIR, "db", "02-rooms.sql")
 
-# ── Blueprint palette (matches dashboard CSS tokens — keep these in sync) ─────
-COLOR_OPEN       = (14, 42, 61, 255)    # #0E2A3D — cyanotype floor surface
-COLOR_WALL       = (232, 222, 200, 255) # #E8DEC8 — cream linework
-COLOR_ZONE_TYPE2 = (31, 169, 199, 255)  # #1FA9C7 — teal, tagged zone type 2
-COLOR_ZONE_TYPE3 = (242, 163, 60, 255)  # #F2A33C — amber, tagged zone type 3
+# Devices walk only the corridor, which is grid-aligned (see phone.py), so
+# one grid cell == one published coordinate unit. This is not a physical
+# meters-per-cell calibration — it is set so the dashboard's existing
+# meters_per_cell-based projection draws cell-aligned coordinates correctly.
+# Replace with a real physical calibration once beacon-based fingerprinting
+# positions are used instead of the simulator.
+DEFAULT_UNITS_PER_CELL = 1.0
 
-VALUE_TO_COLOR = {0: COLOR_OPEN, 1: COLOR_WALL, 2: COLOR_ZONE_TYPE2, 3: COLOR_ZONE_TYPE3}
-
-UPSCALE = 4  # nearest-neighbor upscale for crisp lines at large display sizes
+UPSCALE = 4  # PNG preview only — the SVG is already infinitely sharp
 
 
-def render(grid_path: str, out_path: str) -> tuple[int, int]:
-    grid = np.load(grid_path)
+def render_png_preview(grid: np.ndarray, out_path: str) -> None:
     rows, cols = grid.shape
-
     rgba = np.zeros((rows, cols, 4), dtype=np.uint8)
-    for value, color in VALUE_TO_COLOR.items():
+    palette = {
+        0: (14, 42, 61, 255),
+        geo.WALL_VALUE: (232, 222, 200, 255),
+        geo.ZONE2_VALUE: (31, 169, 199, 255),
+        geo.ZONE3_VALUE: (242, 163, 60, 255),
+    }
+    for value, color in palette.items():
         rgba[grid == value] = color
 
     img = Image.fromarray(rgba, mode="RGBA")
     img = img.resize((cols * UPSCALE, rows * UPSCALE), Image.NEAREST)
     img.save(out_path)
-    print(f"Wrote {out_path}  ({cols}x{rows} cells -> {img.width}x{img.height}px)")
-    return cols, rows
 
 
 def load_existing_floors_config() -> dict:
@@ -73,31 +80,106 @@ def load_existing_floors_config() -> dict:
     return {}
 
 
-def main():
+def room_to_dict(room: geo.Room) -> dict:
+    return {
+        "id": room.room_id,
+        "name": room.name,
+        "col_start": room.col_start,
+        "col_end": room.col_end,
+        "row_start": room.row_start,
+        "row_end": room.row_end,
+    }
+
+
+def write_rooms_sql(all_rooms: dict[int, list[geo.Room]], path: str) -> None:
+    lines = [
+        "-- db/02-rooms.sql",
+        "-- GENERATED FILE — do not edit by hand.",
+        "-- Source of truth: tools/floor_geometry.py ROOM_DIRECTORY,",
+        "-- regenerated by tools/render_floor_maps.py.",
+        "",
+        "CREATE TABLE IF NOT EXISTS rooms (",
+        "    room_id     TEXT    PRIMARY KEY,",
+        "    floor       INTEGER NOT NULL,",
+        "    name        TEXT    NOT NULL,",
+        "    col_start   INTEGER NOT NULL,",
+        "    col_end     INTEGER NOT NULL,",
+        "    row_start   INTEGER NOT NULL,",
+        "    row_end     INTEGER NOT NULL",
+        ");",
+        "",
+        "TRUNCATE TABLE rooms;",
+        "",
+        "INSERT INTO rooms (room_id, floor, name, col_start, col_end, row_start, row_end) VALUES",
+    ]
+
+    value_lines = []
+    for floor in sorted(all_rooms):
+        for room in all_rooms[floor]:
+            name_escaped = room.name.replace("'", "''")
+            value_lines.append(
+                f"    ('{room.room_id}', {room.floor}, '{name_escaped}', "
+                f"{room.col_start}, {room.col_end}, {room.row_start}, {room.row_end})"
+            )
+    lines.append(",\n".join(value_lines) + ";")
+    lines.append("")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+
+
+def main() -> None:
     os.makedirs(ASSETS_DIR, exist_ok=True)
     config = load_existing_floors_config()
+    all_rooms: dict[int, list[geo.Room]] = {}
 
     for floor, grid_path in GRIDS.items():
-        out_path = os.path.join(ASSETS_DIR, f"floor_{floor}.png")
-        cols, rows = render(grid_path, out_path)
+        floor_key = str(floor)
+        grid = np.load(grid_path)
+        rows, cols = grid.shape
 
-        existing = config.get(floor, {})
-        config[floor] = {
+        corridor_band = geo.detect_corridor_band(grid)
+        rooms, room_row_span = geo.build_rooms_for_floor(floor, grid, corridor_band)
+        all_rooms[floor] = rooms
+
+        svg = geo.render_floor_svg(grid, rooms, corridor_band)
+        svg_path = os.path.join(ASSETS_DIR, f"floor_{floor}.svg")
+        with open(svg_path, "w") as f:
+            f.write(svg)
+
+        png_path = os.path.join(ASSETS_DIR, f"floor_{floor}.png")
+        render_png_preview(grid, png_path)
+
+        print(
+            f"Floor {floor}: {cols}x{rows} cells | "
+            f"corridor_rows={corridor_band} | rooms={len(rooms)} | "
+            f"wrote {svg_path}"
+        )
+
+        existing = config.get(floor_key, {})
+        # .get(key, default) only falls back when the key is ABSENT — but the
+        # previous floors.json always had this key present with value null
+        # (uncalibrated). Treat "present but null" the same as "absent": fill
+        # in the default. A real prior calibration (non-null) is preserved.
+        prior_mpc = existing.get("meters_per_cell")
+        meters_per_cell = prior_mpc if prior_mpc is not None else DEFAULT_UNITS_PER_CELL
+
+        config[floor_key] = {
             "cols": cols,
             "rows": rows,
-            "image": f"assets/floor_{floor}.png",
-            # Preserved across re-renders — only set manually via the
-            # dashboard's calibration tool, never overwritten here.
-            "meters_per_cell": existing.get("meters_per_cell"),
+            "image": f"assets/floor_{floor}.svg",
+            "meters_per_cell": meters_per_cell,
             "origin": existing.get("origin", {"col": 0, "row": 0}),
+            "corridor_rows": list(corridor_band),
+            "rooms": [room_to_dict(r) for r in rooms],
         }
 
-    os.makedirs(os.path.dirname(FLOORS_JSON_PATH), exist_ok=True)
     with open(FLOORS_JSON_PATH, "w") as f:
         json.dump(config, f, indent=2)
+    print(f"\nUpdated {FLOORS_JSON_PATH}")
 
-    print(f"\nUpdated {FLOORS_JSON_PATH}:")
-    print(json.dumps(config, indent=2))
+    write_rooms_sql(all_rooms, ROOMS_SQL_PATH)
+    print(f"Updated {ROOMS_SQL_PATH}")
 
 
 if __name__ == "__main__":
