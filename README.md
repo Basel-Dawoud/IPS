@@ -1,61 +1,408 @@
-# IPS
+# IPS — Indoor Positioning System
 
-## Communication
+A graduation-project simulation of an indoor positioning system for a
+two-floor retail space: a simulated phone publishes live position data over
+MQTT, a FastAPI backend fans that out to a fast in-memory store and a
+time-series database, and a browser dashboard shows people moving around the
+building in real time plus historical traffic analytics.
+
+Everything below reflects what's actually in this repo — file by file — not
+an aspirational spec.
+
+---
+
+## 1. What it does
+
+- **`phone.py`** simulates one or more phones walking real, corridor-aware
+  routes across two real floor plans (floor 3 and floor 4), including
+  physically walking to a stairwell and switching floors — not a random
+  teleport.
+- **Mosquitto** routes the MQTT traffic. It has zero application logic.
+- **`server/main.py`** (FastAPI) is the *only* service that touches storage.
+  It subscribes to MQTT, writes live state to **Redis**, writes full history
+  to **TimescaleDB**, ACKs the device, and pushes live updates to connected
+  dashboards over a WebSocket.
+- **`dashboard/index.html`** is the live floor-plan view: animated dots,
+  trails, per-device detail panel, live pipeline health, and a rolling
+  60-minute occupancy/heatmap sidebar.
+- **`dashboard/analytics.html`** is the historical/reporting view: peak
+  occupancy, visitors per floor, top stores, room heatmaps, hourly traffic,
+  and live throughput metrics.
+
+---
+
+## 2. Architecture
 
 ```
-Mobile App
+phone.py (simulator)
     │
-    │  MQTT (position payload)
+    │  MQTT (position / status)
     ▼
 Mosquitto Broker          ← routes messages only, zero logic
     │
     │  MQTT subscription
     ▼
-FastAPI Backend           ← the ONLY service that writes to storage
+FastAPI Backend (server/main.py)   ← the ONLY service that writes to storage
     │
-    ├──▶ Redis                    ← latest position per device (real-time)
+    ├──▶ Redis                     ← latest position/status per device (real-time, TTL-based)
     │
-    └──▶ PostgreSQL + TimescaleDB ← full history, logs, analytics
+    └──▶ PostgreSQL + TimescaleDB  ← full position history
               │
-              └──▶ TimescaleDB extension → heatmaps, history, reports
+              └──▶ Continuous aggregates → occupancy charts, room heatmaps, "most visited"
 ```
 
-The dashboard reads from **both** storages through the FastAPI API layer:
+The dashboard reads from **both** storages through the FastAPI API layer —
+it never touches Redis or Postgres directly:
 
 ```
-Mobile → MQTT → Broker → FastAPI
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-           Redis                        PostgreSQL
-        (real-time)                   (history/logs)
-              │                               │
-              └──────────── Dashboard ────────┘
-                       (FastAPI API layer)
+phone.py → MQTT → Mosquitto → FastAPI
+                                   │
+                 ┌─────────────────┴─────────────────┐
+                 ▼                                    ▼
+              Redis                              PostgreSQL
+           (real-time)                         (history/analytics)
+                 │                                    │
+                 └──────────── dashboard/*.html ───────┘
+                          (WebSocket + REST, via FastAPI)
 ```
 
-| Dashboard query | Source | Why |
+| Question | Answered from | Why |
 |---|---|---|
-| Where is everyone right now? | Redis | Sub-millisecond reads, updated on every position message |
-| Show heatmap for today | PostgreSQL | Historical range query, latency of seconds is acceptable |
-| Device last seen | Redis | Retained last-known state per device |
-| Navigation history for user | PostgreSQL | Persistent record, never expires |
+| Where is everyone right now? | Redis, via `/ws/live` | Sub-millisecond reads, pushed the instant a position arrives |
+| Occupancy chart / heatmap / top stores | PostgreSQL continuous aggregates | Historical range query; a few seconds of latency is fine |
+| Is a device still around? | Redis TTL | Keys expire automatically — no manual cleanup, no "ghost" devices |
+| Full movement history for one device | PostgreSQL | Persistent record, never expires |
 
 ---
 
-## Topics
-
-### `position_topic`
+## 3. Repository layout
 
 ```
-ips/<building_id>/device/<device_id>/position
- │        │             │                └── what type of data
- │        │             └── which device
- │        └── subdivision (building)
- └── root namespace
+.
+├── phone.py                 # MQTT simulator — the "phone"
+├── server/
+│   ├── main.py               # FastAPI backend — MQTT, Redis, Postgres, WebSocket, REST
+│   ├── floors.json           # generated: per-floor dimensions, corridor rows, room directory
+│   ├── Dockerfile
+│   └── requirements.txt      # server-only deps (fastapi, asyncpg, redis, aiomqtt, websockets)
+├── dashboard/
+│   ├── index.html             # live floor-plan view
+│   ├── analytics.html         # historical analytics view
+│   └── assets/                # generated floor_3/floor_4 .svg + .png
+├── db/
+│   ├── init.sql                # device_positions hypertable + continuous aggregates
+│   └── 02-rooms.sql            # generated: rooms table seed (id, name, bounding box)
+├── tools/
+│   ├── floor_geometry.py       # detects corridor band + room blocks from the raw grids
+│   ├── render_floor_maps.py    # regenerates SVG/PNG assets, floors.json, 02-rooms.sql
+│   └── inspect_floor_maps.py   # ASCII + matplotlib inspector for the raw .npy grids
+├── maps/
+│   ├── floor_3_grid.npy        # raw floor grid: 0=open, 1=wall, 2/3=tagged zone
+│   └── floor_4_grid.npy
+├── mosquitto/mosquitto.conf
+├── docs/
+│   ├── MQTT_CONTRACT.md          # topic/payload spec — single source of truth for the wire format
+│   ├── DASHBOARD_MQTT_RULES.md
+│   └── MOBILE_APP_MQTT_RULES.md
+├── docker-compose.yml
+├── Makefile
+├── reset.sh                    # full clean rebuild + health check
+├── requirements.txt             # host-side deps for phone.py + tools/ (NOT used by the server container)
+└── .env.example
 ```
 
-Floor is kept in the **payload only** — topics are stable even when the user
-moves between floors.
+---
 
-Full topic table and payload schemas: `docs/MQTT_CONTRACT.md`
+## 4. The MQTT contract (short version)
+
+Full spec: **`docs/MQTT_CONTRACT.md`**. Summary:
+
+```
+ips/<building_id>/device/<device_id>/position    qos=0, retain=false
+ips/<building_id>/device/<device_id>/status       qos=1, retain=true
+ips/<building_id>/device/<device_id>/command      qos=1, retain=false   (ACKs, server → device)
+ips/<building_id>/device/<device_id>/alert        qos=1, retain=false
+```
+
+Floor lives **in the payload**, never in the topic — a device changing
+floors doesn't need to resubscribe or change its topic tree.
+
+Each `position` payload includes the raw grid cell the simulator walked to
+(`grid_row`, `grid_col`, `map_value`), the published metric coordinates
+(`x`, `y`), the nearest `room_id`, a `zone_id`, and a jittered `accuracy`
+value — enough for the dashboard to render a realistic-looking live dot
+without pretending to have real beacon hardware.
+
+---
+
+## 5. Backend (`server/main.py`)
+
+FastAPI app. On startup it connects to Postgres and Redis (retrying a few
+times if the containers aren't ready yet), then starts a background MQTT
+subscriber loop that never blocks request handling.
+
+**MQTT → storage flow**, per message:
+1. Parse JSON. Bad payloads are logged and dropped, not crashed on.
+2. **Position messages:** write to Redis first (this is the part that must
+   succeed for the device to get a `"stored"` ACK) → broadcast immediately
+   to every connected dashboard over WebSocket → best-effort write to
+   Postgres for history (a Postgres failure is logged but does **not** turn
+   the ACK into an error — live state already succeeded).
+3. **Status messages:** same Redis-write-then-broadcast pattern, no
+   history write (status is a heartbeat, not a position sample).
+
+### REST endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | MQTT/Redis/Postgres connectivity, for the dashboard's status strip |
+| `GET /floors` | Full contents of `floors.json` — dimensions, image path, `meters_per_cell` calibration, corridor rows, room directory |
+| `GET /rooms?floor=` | Static room directory (id, name, bounding box) |
+| `GET /live/positions` | Current position of every active device (same data the WebSocket sends on connect) |
+| `GET /live/status/{device_id}` | Latest heartbeat for one device |
+| `GET /history/device/{device_id}?limit=` | Raw position history for one device, most recent first |
+| `GET /analytics/floor/{floor}?minutes=` | 5-minute-bucketed occupancy time series for one floor |
+| `GET /analytics/rooms?floor=&minutes=&limit=` | Per-room visit counts, ranked — "most visited stores" |
+| `GET /analytics/heatmap?floor=&minutes=` | Per-room visit intensity, normalized 0–1 against the busiest room |
+| `WS /ws/live` | Push-only: one full snapshot on connect, then incremental `position`/`status` events the instant they arrive — no polling |
+
+### Config (environment variables, all set in `docker-compose.yml` / `.env`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MQTT_HOST` | `mosquitto` | Broker hostname |
+| `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Redis connection |
+| `LIVE_KEY_TTL_SECONDS` | `180` | How long a device's live Redis key survives with no update before it's considered offline |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:8080,http://127.0.0.1:8080` | Browser origins allowed to call the API. **Must match the dashboard's origin exactly** (scheme + host + port) or requests are silently blocked — add your demo-day IP here before presenting from anywhere else. |
+| `POSTGRES_HOST/DB/USER/PASSWORD/PORT` | see `.env.example` | Postgres connection |
+| `HISTORY_SAMPLING_ENABLED` | `false` | Optional: write only 1-in-N position messages to Postgres history (Redis/WebSocket always get every message). Off until write volume is actually a problem. |
+
+---
+
+## 6. Storage (`db/init.sql`, `db/02-rooms.sql`)
+
+- **`device_positions`** — a TimescaleDB hypertable, one row per position
+  sample: `ts, device_id, building_id, floor, zone_id, room_id, x, y`.
+  Indexed by `(device_id, ts)` and `(building_id, floor, ts)` for fast
+  per-device and per-floor queries.
+- **`crowd_analytics`** — a continuous aggregate: unique device count per
+  floor, bucketed every 5 minutes. Powers `/analytics/floor/{floor}`.
+- **`room_visits`** — a continuous aggregate: visit count per room,
+  bucketed every 5 minutes, excluding samples with no `room_id` (e.g. a
+  device in the corridor between stores). Powers `/analytics/rooms` and
+  `/analytics/heatmap`.
+- **`rooms`** — a plain table (id, floor, name, bounding box), regenerated
+  by `tools/render_floor_maps.py` from the same `Room` objects used to
+  label the SVG floor plans, so the database and the dashboard's labels can
+  never drift apart.
+
+**Important:** continuous aggregates rely on TimescaleDB's background job
+scheduler (`add_continuous_aggregate_policy`), which is **not** included in
+the `-oss` (pure Apache-2.0) Docker image. `docker-compose.yml` must use the
+community image:
+
+```yaml
+image: timescale/timescaledb:2.27.0-pg16     # NOT the -oss variant
+```
+
+If you ever see `functionality not supported under the current "apache"
+license` in the postgres container logs, that's this — the `-oss` tag was
+used and the continuous aggregates silently failed to create (the container
+still reports "healthy" because the healthcheck is just `pg_isready`, which
+has no idea `init.sql` errored out partway through).
+
+---
+
+## 7. Simulator (`phone.py`)
+
+Loads the real floor grids (`maps/floor_3_grid.npy`, `maps/floor_4_grid.npy`)
+and `server/floors.json`, and moves one or more simulated devices along
+actual corridor cells — never through a wall, never inside a room interior
+(`CORRIDOR_ONLY=true` by default).
+
+**Default route** (`FloorNavigator`, BFS-pathfound over the real grid):
+
+```
+floor 3, spawn near the start
+   → walk to the right-side stairs (grid value 2, "tagged zone")
+   → floor transition → floor 4, arrive at its right stairs
+   → walk to the left-side stairs
+   → floor transition → floor 3, arrive at its left stairs
+   → repeat
+```
+
+Stair locations are configured per floor by column (`STAIRS` dict) and
+resolved to the nearest actual walkable `value == 2` cell at runtime, so a
+floor-plan regeneration doesn't silently break the route.
+
+Each position payload carries the real grid cell (`grid_row`/`grid_col`),
+a small jittered offset so dots don't look robotically snapped to a grid,
+a jittered `accuracy`, the nearest `room_id` (looked up from the room
+directory by column), and a `motion` field (`walking`/`stationary`).
+
+### Config (environment variables)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NUM_DEVICES` | `1` | `1` = single stable device (`device_id.txt`), persisted across restarts. `>1` = a fleet of ephemeral devices for load testing. |
+| `FLOORS` | `3,4` | Which floor maps to load |
+| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker to connect to (from the host, not inside Docker) |
+| `BUILDING_ID` | `building1` | Building segment in every topic |
+| `POSITION_INTERVAL_SECONDS` | `0.5` | How often a position is published |
+| `STATUS_INTERVAL_SECONDS` | `30` | How often a heartbeat/battery status is published |
+| `CORRIDOR_ONLY` | `true` | Confine movement to the corridor band only; `false` allows the whole walkable floor (debugging) |
+| `WALKABLE_VALUES` | `0,2,3` | Which grid values count as walkable |
+| `TURN_PROBABILITY` | `0.18` | Chance of an "exploratory" random step instead of the shortest-path step, so movement doesn't look robotic |
+| `COORD_SCALE` | `1.0` | Grid-cell → published-unit scale factor |
+
+Run one simulated user:
+```bash
+FLOORS=3,4 ./venv/bin/python phone.py
+```
+Run a fleet for load testing:
+```bash
+NUM_DEVICES=50 FLOORS=3,4 ./venv/bin/python phone.py
+```
+
+---
+
+## 8. Dashboard
+
+Two static HTML files served by any static file server (e.g.
+`python3 -m http.server 8080` from `dashboard/`) — no build step.
+
+### `index.html` — live view
+- Canvas-rendered floor plan (SVG background + animated device overlay),
+  with a floor tab per level and an animated transition when switching.
+- Interpolated device dots with a fading trail, an accuracy halo, and a
+  selection ring; click a dot or a list row to select it.
+- **Occupancy panel** — current count on this floor + total across floors.
+- **Selected device panel** — ID, floor, battery, position, nearest room,
+  motion, accuracy, time-in-room (`trackRoomDwell`), last update age.
+- **Live analytics sidebar** — 60-minute occupancy sparkline, most-visited
+  stores, and an optional per-room heatmap overlay that shows a clear "no
+  traffic data yet" note instead of a misleading empty tint when a floor
+  has no real visits in the window.
+- **System health strip** — MQTT/Redis/DB connectivity dots, polled from
+  `/health`.
+
+### `analytics.html` — historical/reporting view
+- **Peak occupancy** (24h) and **visitors per floor**, computed from
+  `/analytics/floor/{floor}`.
+- **Top stores**, from `/analytics/rooms`.
+- **Per-floor heatmap tiles**, from `/analytics/heatmap`.
+- **Hourly traffic chart** — a true chronological last-24-hours timeline
+  (bucketed by elapsed hours-ago from now, not by hour-of-day, so a window
+  crossing midnight doesn't merge two different days into one bar).
+- **Devices online now** — polled from `/live/positions`, which self-prunes
+  via Redis TTL (not accumulated from websocket traffic, which would only
+  ever grow).
+- **Live update rate** — position/status pushes per second over `/ws/live`,
+  5-second rolling window.
+- **Backend response time**, from round-tripping `/health`.
+
+Both pages talk to the backend at `http://<hostname>:8000` by default
+(same-machine assumption); the API base is derived from `location.hostname`
+so it works unmodified when opened from another machine on the LAN too.
+
+---
+
+## 9. Running it
+
+```bash
+cp .env.example .env          # adjust POSTGRES_PASSWORD etc. if you want
+docker compose up --build -d  # mosquitto, redis, postgres, server
+cd dashboard && python3 -m http.server 8080   # serve the dashboard
+FLOORS=3,4 ./venv/bin/python phone.py         # start the simulator (separate terminal)
+```
+
+Then open `http://localhost:8080/index.html` (live view) and
+`http://localhost:8080/analytics.html` (historical view). Backend API docs
+(auto-generated by FastAPI) are at `http://localhost:8000/docs`.
+
+### `Makefile` shortcuts
+
+| Target | Does |
+|---|---|
+| `make up` | `docker compose up --build` |
+| `make down` | Stop containers |
+| `make reset` | Stop + wipe volumes + rebuild |
+| `make render-maps` | Regenerate SVG/PNG assets, `floors.json`, `02-rooms.sql` from the raw `.npy` grids |
+| `make simulate` | Run `phone.py` |
+| `make logs` | Tail the server container's logs |
+| `make db` / `make redis-cli` | Open a psql / redis-cli shell inside the running container |
+| `make test` | Curl `/health` and `/live/positions` |
+
+### `reset.sh`
+
+A full clean rebuild in one command: stops and removes containers +
+volumes, optionally clears `device_id.txt` and Mosquitto's persisted state,
+reinstalls Python dependencies, regenerates the floor assets, syntax-checks
+every Python source, validates `docker-compose.yml`, rebuilds, and polls
+`/health` until the backend is actually up (printing the last 100 log lines
+if it never comes up). Flags: `--yes`, `--keep-id`, `--keep-mqtt`,
+`--no-install`. Run `./reset.sh --help` for the full list.
+
+---
+
+## 10. Regenerating the floor plans
+
+If `maps/floor_3_grid.npy` or `maps/floor_4_grid.npy` ever change (new
+survey, layout change), or `ROOM_DIRECTORY` in `tools/floor_geometry.py` is
+edited (room numbers/names are real-world ground truth, not something
+derivable from the grid — see the module docstring), regenerate every
+downstream artifact in one step:
+
+```bash
+./venv/bin/python tools/render_floor_maps.py
+```
+
+This rewrites `dashboard/assets/floor_*.svg`/`.png`, `server/floors.json`
+(preserving any manually-calibrated `meters_per_cell`/`origin` you've
+already set), and `db/02-rooms.sql` — all from the same detected room
+geometry, so the SVG labels, the dashboard's room lookup, and the database
+seed can never disagree with each other.
+
+`meters_per_cell` starts `null`/uncalibrated until someone measures a known
+real-world distance against the grid and edits `server/floors.json`
+directly; until then the dashboard shows a small on-screen note and treats
+1 grid cell as 1 published unit.
+
+---
+
+## 11. Two dependency files, on purpose
+
+- **`requirements.txt`** (repo root) — for the host-side `./venv` only, used
+  to run `phone.py` and `tools/*.py`. Needs `numpy`, `pillow`, `matplotlib`.
+- **`server/requirements.txt`** — for the Docker image only (`fastapi`,
+  `asyncpg`, `redis`, `aiomqtt`, `websockets`). Deliberately excludes
+  `numpy`/`matplotlib` so the server image stays small and doesn't rebuild
+  slowly for a dependency it never uses.
+
+---
+
+## 12. Docs
+
+- **`docs/MQTT_CONTRACT.md`** — the wire-format source of truth: topics,
+  QoS/retain rules, the `device_id` identity rule, full payload schemas.
+- **`docs/DASHBOARD_MQTT_RULES.md`** — what the dashboard is/isn't allowed
+  to assume about the live data feed.
+- **`docs/MOBILE_APP_MQTT_RULES.md`** — the contract a *real* phone client
+  would need to follow to drop into this same pipeline in place of
+  `phone.py`.
+
+---
+
+## 13. Known limitations
+
+- `meters_per_cell` calibration is manual — there's no automatic real-world
+  distance measurement, so out of the box positions are in grid-cell units.
+- Dwell-time analytics are a bucket-based approximation (5-minute
+  `room_visits` windows), not per-visit session reconstruction — good
+  enough for a demo, not a precise stopwatch.
+- Single Mosquitto broker, single Postgres instance, in-memory-only
+  WebSocket connection list — this is a demo/graduation-project topology,
+  not a horizontally-scaled production one.
+- `phone.py`'s stair columns (`STAIRS` dict) are configured per floor by
+  hand; regenerating the floor grids at a very different scale would need
+  those columns re-checked.
