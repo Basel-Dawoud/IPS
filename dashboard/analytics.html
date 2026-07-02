@@ -137,9 +137,9 @@
   </div>
 
   <div class="card span-4">
-    <div class="card-label">MQTT throughput <span class="hint">live via /ws/live</span></div>
+    <div class="card-label">Live update rate <span class="hint">via /ws/live</span></div>
     <div class="big-stat" id="mqttRate">0.0</div>
-    <div class="big-stat-sub">messages / second, 5s rolling window</div>
+    <div class="big-stat-sub">position/status pushes per second, 5s rolling window</div>
   </div>
 
   <div class="card span-6">
@@ -203,7 +203,6 @@ const HEATMAP_COLORS = [[45,212,167],[31,169,199],[242,163,60],[226,87,76]];
 
 let floorsConfig = null;
 let wsTimestamps = [];
-let liveDeviceCount = 0;
 
 function heatColor(intensity, alphaBoost = 0){
   const t = Math.min(1, Math.max(0, intensity));
@@ -233,6 +232,7 @@ async function boot(){
   loadHourlyTraffic();
   loadHeatmaps();
   loadDwellSnapshot();
+  loadDevicesOnline();
 
   setInterval(() => {
     loadPeakOccupancy();
@@ -240,15 +240,15 @@ async function boot(){
     loadTopStores();
     loadHeatmaps();
     loadDwellSnapshot();
+    loadDevicesOnline();
   }, 20000);
 }
 
-/* ── Live websocket: device count + mqtt rate ─────────────────────────── */
+/* ── Live websocket: mqtt/update rate ─────────────────────────────────── */
 function connectWebSocket(){
   const ws = new WebSocket(WS_URL);
   const badge = document.getElementById('liveBadge');
   const label = document.getElementById('liveLabel');
-  const seenIds = new Set();
 
   ws.onopen = () => { badge.classList.add('live'); label.textContent = 'Live'; };
   ws.onclose = () => { badge.classList.remove('live'); label.textContent = 'Reconnecting…'; setTimeout(connectWebSocket, 2000); };
@@ -258,14 +258,9 @@ function connectWebSocket(){
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     wsTimestamps.push(Date.now());
-
-    if (msg.type === 'snapshot') {
-      msg.items.forEach(i => seenIds.add(i.device_id));
-      liveDeviceCount = msg.items.length;
-    } else if (msg.type === 'position') {
-      seenIds.add(msg.device_id);
-    }
-    document.getElementById('devicesOnlineNow').textContent = seenIds.size;
+    // A position/status push means something just changed — true up the
+    // "online now" count right away instead of waiting for the next poll.
+    if (msg.type === 'position' || msg.type === 'snapshot') loadDevicesOnline();
   };
 }
 
@@ -273,6 +268,19 @@ function updateMqttRate(){
   const cutoff = Date.now() - RATE_WINDOW_MS;
   wsTimestamps = wsTimestamps.filter(t => t >= cutoff);
   document.getElementById('mqttRate').textContent = (wsTimestamps.length / (RATE_WINDOW_MS/1000)).toFixed(1);
+}
+
+/* ── Devices online now — source of truth is /live/positions, which
+   self-prunes expired Redis keys, not an accumulated websocket Set (which
+   would only ever grow and never reflect devices going offline). ───────── */
+async function loadDevicesOnline(){
+  try {
+    const res = await fetch(`${API_BASE}/live/positions`);
+    const data = await res.json();
+    document.getElementById('devicesOnlineNow').textContent = data.count ?? 0;
+  } catch {
+    document.getElementById('devicesOnlineNow').textContent = '—';
+  }
 }
 
 /* ── Backend latency ───────────────────────────────────────────────────── */
@@ -292,30 +300,35 @@ async function pollHealth(){
 /* ── Peak occupancy across floors (24h) ───────────────────────────────── */
 async function loadPeakOccupancy(){
   const floors = Object.keys(floorsConfig);
-  let bestPeak = 0, bestFloor = null;
-  for (const floor of floors) {
+  const results = await Promise.all(floors.map(async floor => {
     try {
       const res = await fetch(`${API_BASE}/analytics/floor/${floor}?minutes=1440`);
       const data = await res.json();
-      const peak = Math.max(0, ...(data.items || []).map(i => i.device_count));
-      if (peak >= bestPeak) { bestPeak = peak; bestFloor = floor; }
-    } catch { /* skip this floor */ }
+      const items = data.items || [];
+      if (!items.length) return null; // no data at all — distinct from a real 0
+      return { floor, peak: Math.max(0, ...items.map(i => i.device_count)) };
+    } catch { return null; }
+  }));
+
+  let best = null;
+  for (const r of results) {
+    if (r && (!best || r.peak >= best.peak)) best = r;
   }
-  document.getElementById('peakOccupancy').textContent = bestFloor ? bestPeak : '—';
-  document.getElementById('peakOccupancyFloor').textContent = bestFloor ? `on Level 0${bestFloor}` : 'no data yet';
+  document.getElementById('peakOccupancy').textContent = best ? best.peak : '—';
+  document.getElementById('peakOccupancyFloor').textContent = best ? `on Level 0${best.floor}` : 'no data yet';
 }
 
 /* ── Visitors per floor (24h totals, normalized to the busiest floor) ──── */
 async function loadFloorVisitors(){
   const floors = Object.keys(floorsConfig);
   const totals = {};
-  for (const floor of floors) {
+  await Promise.all(floors.map(async floor => {
     try {
       const res = await fetch(`${API_BASE}/analytics/floor/${floor}?minutes=1440`);
       const data = await res.json();
       totals[floor] = (data.items || []).reduce((sum, i) => sum + i.device_count, 0);
     } catch { totals[floor] = 0; }
-  }
+  }));
   const max = Math.max(1, ...Object.values(totals));
   const wrap = document.getElementById('floorBars');
   if (Object.values(totals).every(v => v === 0)) {
@@ -374,11 +387,20 @@ async function loadHourlyTraffic(){
     const items = data.items || [];
     if (!items.length) { svg.style.display = 'none'; empty.style.display = 'block'; return; }
 
-    // Roll the 5-min buckets up into 24 hourly buckets (max occupancy per hour).
+    // Roll the 5-min buckets into 24 *chronological* hourly slots ending now
+    // (slot 23 = the current hour, slot 0 = 23 hours ago) — bucketing by
+    // elapsed time rather than getHours() keeps a day-boundary crossing from
+    // merging two different days into one hour-of-day slot.
+    const now = Date.now();
     const hourly = new Array(24).fill(0);
+    const slotStart = new Array(24).fill(null);
     items.forEach(i => {
-      const hour = new Date(i.bucket).getHours();
-      hourly[hour] = Math.max(hourly[hour], i.device_count);
+      const bucketTime = new Date(i.bucket).getTime();
+      const hoursAgo = Math.floor((now - bucketTime) / 3600000);
+      if (hoursAgo < 0 || hoursAgo > 23) return; // outside the 24h window
+      const slot = 23 - hoursAgo;
+      hourly[slot] = Math.max(hourly[slot], i.device_count);
+      if (slotStart[slot] === null || bucketTime < slotStart[slot]) slotStart[slot] = bucketTime;
     });
 
     svg.style.display = 'block';
@@ -386,12 +408,13 @@ async function loadHourlyTraffic(){
     const peak = Math.max(...hourly, 1);
     const W = 100, H = 40, barW = (W / 24) - 0.4;
     let rects = '';
-    hourly.forEach((v, h) => {
-      const x = (h / 24) * W;
+    hourly.forEach((v, slot) => {
+      const x = (slot / 24) * W;
       const barH = (v / peak) * (H - 8);
       rects += `<rect x="${x.toFixed(2)}" y="${(H-barH).toFixed(2)}" width="${barW.toFixed(2)}" height="${barH.toFixed(2)}" fill="#2DD4A7" rx="0.3"/>`;
-      if (h % 4 === 0) {
-        rects += `<text x="${x.toFixed(2)}" y="${H+3.5}" font-family="IBM Plex Mono, monospace" font-size="2.6" fill="#93A0AE">${h}h</text>`;
+      if (slot % 4 === 0 && slotStart[slot] !== null) {
+        const label = new Date(slotStart[slot]).getHours();
+        rects += `<text x="${x.toFixed(2)}" y="${H+3.5}" font-family="IBM Plex Mono, monospace" font-size="2.6" fill="#93A0AE">${label}h</text>`;
       }
     });
     svg.innerHTML = rects;
