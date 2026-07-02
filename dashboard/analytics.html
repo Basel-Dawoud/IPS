@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPS — Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink: #0B1220; --paper: #0E2A3D; --line: #E8DEC8; --line-dim: #5C6B73;
+    --panel: #101B2C; --panel-edge: #1C2D40; --panel-raised: #142238;
+    --text: #F2EFE6; --text-dim: #93A0AE;
+    --signal: #2DD4A7; --signal-dim: rgba(45, 212, 167, 0.18);
+    --zone-2: #1FA9C7; --zone-3: #F2A33C; --danger: #E2574C;
+    --font-display: 'Space Grotesk', sans-serif;
+    --font-ui: 'Inter', sans-serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+  }
+  *{ box-sizing: border-box; }
+  body{
+    margin: 0; background: var(--ink); color: var(--text); font-family: var(--font-ui);
+    min-height: 100vh;
+  }
+  ::-webkit-scrollbar{ width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track{ background: transparent; }
+  ::-webkit-scrollbar-thumb{ background: var(--panel-edge); border-radius: 4px; }
+
+  header{
+    display: flex; align-items: center; gap: 20px; padding: 16px 28px;
+    border-bottom: 1px solid var(--panel-edge);
+    background: linear-gradient(180deg, rgba(20,34,56,0.6), transparent);
+    position: sticky; top: 0; backdrop-filter: blur(6px); z-index: 10;
+  }
+  .brand{ display: flex; align-items: baseline; gap: 10px; }
+  .brand .mark{
+    font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.02em;
+    background: linear-gradient(90deg, var(--text) 60%, var(--signal));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .brand .sub{ font-size: 13px; color: var(--text-dim); }
+  a.back-link{
+    margin-left: auto; color: var(--text-dim); text-decoration: none; font-family: var(--font-mono); font-size: 12px;
+    border: 1px solid var(--panel-edge); padding: 7px 14px; border-radius: 999px; transition: color 0.15s, border-color 0.15s;
+  }
+  a.back-link:hover{ color: var(--text); border-color: var(--signal); }
+
+  .live-badge{
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);
+    padding: 6px 12px; border: 1px solid var(--panel-edge); border-radius: 999px;
+  }
+  .live-badge .dot{ width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .live-badge.live .dot{ background: var(--signal); box-shadow: 0 0 6px 0 var(--signal-dim); }
+  .live-badge.live{ color: var(--text); }
+
+  main{ padding: 28px; display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; max-width: 1400px; margin: 0 auto; }
+
+  .card{
+    background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .card.span-4{ grid-column: span 4; }
+  .card.span-6{ grid-column: span 6; }
+  .card.span-8{ grid-column: span 8; }
+  .card.span-12{ grid-column: span 12; }
+  @media (max-width: 1000px){
+    .card.span-4, .card.span-6, .card.span-8{ grid-column: span 12; }
+  }
+
+  .card-label{
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+    margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-label .hint{ font-size: 10px; text-transform: none; letter-spacing: 0; font-family: var(--font-mono); }
+
+  .big-stat{ font-family: var(--font-mono); font-size: 38px; font-weight: 600; color: var(--signal); line-height: 1; }
+  .big-stat-sub{ font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+
+  .floor-bars{ display: flex; flex-direction: column; gap: 12px; }
+  .floor-bar-row{ display: grid; grid-template-columns: 60px 1fr 40px; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 12px; }
+  .floor-bar-track{ height: 10px; background: var(--panel-edge); border-radius: 5px; overflow: hidden; }
+  .floor-bar-fill{ height: 100%; background: linear-gradient(90deg, var(--signal), var(--zone-2)); border-radius: 5px; transition: width 0.4s ease; }
+
+  .room-rank-row{
+    display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px; padding: 7px 0; font-size: 13px;
+  }
+  .room-rank-pos{ font-family: var(--font-mono); color: var(--text-dim); font-size: 11px; }
+  .room-rank-name{ color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .room-rank-bar-track{ grid-column: 1 / -1; height: 4px; background: var(--panel-edge); border-radius: 2px; overflow: hidden; margin-bottom: 2px; }
+  .room-rank-bar-fill{ height: 100%; background: var(--zone-2); border-radius: 2px; }
+  .room-rank-count{ font-family: var(--font-mono); color: var(--zone-2); font-size: 11px; }
+
+  .hourly-chart{ width: 100%; height: 140px; display: block; }
+  .empty{ font-size: 12px; color: var(--text-dim); padding: 20px 0; text-align: center; }
+
+  select{
+    background: var(--panel-raised); color: var(--text); border: 1px solid var(--panel-edge);
+    border-radius: 4px; padding: 4px 8px; font-family: var(--font-mono); font-size: 11px;
+  }
+
+  .heatmap-grid{ display: flex; gap: 14px; flex-wrap: wrap; }
+  .heatmap-tile{ flex: 1; min-width: 220px; }
+  .heatmap-tile .tile-label{ font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .heatmap-tile canvas{ width: 100%; border-radius: 6px; border: 1px solid var(--panel-edge); display: block; }
+
+  .stat-grid{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+  .stat-cell{ background: var(--panel-raised); border: 1px solid var(--panel-edge); border-radius: 6px; padding: 10px 12px; }
+  .stat-cell .k{ color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-cell .v{ font-family: var(--font-mono); color: var(--text); margin-top: 4px; font-size: 17px; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="mark">IPS</span>
+    <span class="sub">Analytics · Building 1</span>
+  </div>
+  <div class="live-badge" id="liveBadge"><span class="dot"></span><span id="liveLabel">Connecting…</span></div>
+  <a class="back-link" href="index.html">← Live floor plan</a>
+</header>
+
+<main>
+
+  <div class="card span-4">
+    <div class="card-label">Peak occupancy · 24h</div>
+    <div class="big-stat" id="peakOccupancy">—</div>
+    <div class="big-stat-sub" id="peakOccupancyFloor">across all floors</div>
+  </div>
+
+  <div class="card span-4">
+    <div class="card-label">Backend response time <span class="hint" id="latencyHint"></span></div>
+    <div class="big-stat" id="backendLatency">—</div>
+    <div class="big-stat-sub">GET /health round-trip, measured live</div>
+  </div>
+
+  <div class="card span-4">
+    <div class="card-label">MQTT throughput <span class="hint">live via /ws/live</span></div>
+    <div class="big-stat" id="mqttRate">0.0</div>
+    <div class="big-stat-sub">messages / second, 5s rolling window</div>
+  </div>
+
+  <div class="card span-6">
+    <div class="card-label">Visitors per floor · last 24h</div>
+    <div class="floor-bars" id="floorBars"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card span-6">
+    <div class="card-label">Top stores <span class="hint">last 60 min, all floors</span></div>
+    <div id="topStores"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="card span-12">
+    <div class="card-label">
+      <span>Hourly traffic · last 24h</span>
+      <select id="hourlyFloorSelect"></select>
+    </div>
+    <svg class="hourly-chart" id="hourlyChart" viewBox="0 0 100 40" preserveAspectRatio="none"></svg>
+    <div class="empty" id="hourlyEmpty" style="display:none">No traffic recorded in this window yet.</div>
+  </div>
+
+  <div class="card span-12">
+    <div class="card-label">
+      <span>Store-traffic heatmap</span>
+      <span class="hint">last 60 min, tinted by relative visit intensity</span>
+    </div>
+    <div class="heatmap-grid" id="heatmapGrid"><div class="empty">Loading floor plans…</div></div>
+  </div>
+
+  <div class="card span-12">
+    <div class="card-label">Dwell time snapshot</div>
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="k">Rooms tracked · 60m</div><div class="v" id="roomsTracked">—</div></div>
+      <div class="stat-cell"><div class="k">Total visits · 60m</div><div class="v" id="totalVisits">—</div></div>
+      <div class="stat-cell"><div class="k">Busiest floor</div><div class="v" id="busiestFloor">—</div></div>
+      <div class="stat-cell"><div class="k">Devices online now</div><div class="v" id="devicesOnlineNow">0</div></div>
+    </div>
+    <div class="big-stat-sub" style="margin-top:12px">
+      Per-device dwell time (how long an individual stayed near a store) is tracked live on the
+      <a href="index.html" style="color:var(--signal)">floor plan page</a> once a device is selected —
+      it depends on that device's own visit history, so it isn't a single floor-wide number.
+    </div>
+  </div>
+
+</main>
+
+<script>
+const API_BASE = (() => {
+  const host = location.hostname || 'localhost';
+  return `http://${host}:8000`;
+})();
+const WS_URL = (() => {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const host = location.hostname || 'localhost';
+  return `${proto}://${host}:8000/ws/live`;
+})();
+
+const HEALTH_POLL_MS = 5000;
+const RATE_WINDOW_MS = 5000;
+const HEATMAP_COLORS = [[45,212,167],[31,169,199],[242,163,60],[226,87,76]];
+
+let floorsConfig = null;
+let wsTimestamps = [];
+let liveDeviceCount = 0;
+
+function heatColor(intensity, alphaBoost = 0){
+  const t = Math.min(1, Math.max(0, intensity));
+  const seg = Math.min(HEATMAP_COLORS.length - 2, Math.floor(t * (HEATMAP_COLORS.length - 1)));
+  const local = t * (HEATMAP_COLORS.length - 1) - seg;
+  const [r1,g1,b1] = HEATMAP_COLORS[seg];
+  const [r2,g2,b2] = HEATMAP_COLORS[seg+1];
+  const r = Math.round(r1 + (r2-r1)*local), g = Math.round(g1 + (g2-g1)*local), b = Math.round(b1 + (b2-b1)*local);
+  return `rgba(${r},${g},${b},${(0.18 + intensity*0.4 + alphaBoost).toFixed(2)})`;
+}
+
+async function boot(){
+  const res = await fetch(`${API_BASE}/floors`);
+  floorsConfig = await res.json();
+
+  buildHourlyFloorSelect();
+  buildHeatmapTiles();
+
+  connectWebSocket();
+  pollHealth();
+  setInterval(pollHealth, HEALTH_POLL_MS);
+  setInterval(updateMqttRate, 1000);
+
+  loadPeakOccupancy();
+  loadFloorVisitors();
+  loadTopStores();
+  loadHourlyTraffic();
+  loadHeatmaps();
+  loadDwellSnapshot();
+
+  setInterval(() => {
+    loadPeakOccupancy();
+    loadFloorVisitors();
+    loadTopStores();
+    loadHeatmaps();
+    loadDwellSnapshot();
+  }, 20000);
+}
+
+/* ── Live websocket: device count + mqtt rate ─────────────────────────── */
+function connectWebSocket(){
+  const ws = new WebSocket(WS_URL);
+  const badge = document.getElementById('liveBadge');
+  const label = document.getElementById('liveLabel');
+  const seenIds = new Set();
+
+  ws.onopen = () => { badge.classList.add('live'); label.textContent = 'Live'; };
+  ws.onclose = () => { badge.classList.remove('live'); label.textContent = 'Reconnecting…'; setTimeout(connectWebSocket, 2000); };
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    wsTimestamps.push(Date.now());
+
+    if (msg.type === 'snapshot') {
+      msg.items.forEach(i => seenIds.add(i.device_id));
+      liveDeviceCount = msg.items.length;
+    } else if (msg.type === 'position') {
+      seenIds.add(msg.device_id);
+    }
+    document.getElementById('devicesOnlineNow').textContent = seenIds.size;
+  };
+}
+
+function updateMqttRate(){
+  const cutoff = Date.now() - RATE_WINDOW_MS;
+  wsTimestamps = wsTimestamps.filter(t => t >= cutoff);
+  document.getElementById('mqttRate').textContent = (wsTimestamps.length / (RATE_WINDOW_MS/1000)).toFixed(1);
+}
+
+/* ── Backend latency ───────────────────────────────────────────────────── */
+async function pollHealth(){
+  const started = performance.now();
+  try {
+    await fetch(`${API_BASE}/health`);
+    const ms = Math.round(performance.now() - started);
+    document.getElementById('backendLatency').textContent = `${ms}ms`;
+    document.getElementById('latencyHint').textContent = ms < 100 ? 'nominal' : 'elevated';
+  } catch {
+    document.getElementById('backendLatency').textContent = 'down';
+    document.getElementById('latencyHint').textContent = 'unreachable';
+  }
+}
+
+/* ── Peak occupancy across floors (24h) ───────────────────────────────── */
+async function loadPeakOccupancy(){
+  const floors = Object.keys(floorsConfig);
+  let bestPeak = 0, bestFloor = null;
+  for (const floor of floors) {
+    try {
+      const res = await fetch(`${API_BASE}/analytics/floor/${floor}?minutes=1440`);
+      const data = await res.json();
+      const peak = Math.max(0, ...(data.items || []).map(i => i.device_count));
+      if (peak >= bestPeak) { bestPeak = peak; bestFloor = floor; }
+    } catch { /* skip this floor */ }
+  }
+  document.getElementById('peakOccupancy').textContent = bestFloor ? bestPeak : '—';
+  document.getElementById('peakOccupancyFloor').textContent = bestFloor ? `on Level 0${bestFloor}` : 'no data yet';
+}
+
+/* ── Visitors per floor (24h totals, normalized to the busiest floor) ──── */
+async function loadFloorVisitors(){
+  const floors = Object.keys(floorsConfig);
+  const totals = {};
+  for (const floor of floors) {
+    try {
+      const res = await fetch(`${API_BASE}/analytics/floor/${floor}?minutes=1440`);
+      const data = await res.json();
+      totals[floor] = (data.items || []).reduce((sum, i) => sum + i.device_count, 0);
+    } catch { totals[floor] = 0; }
+  }
+  const max = Math.max(1, ...Object.values(totals));
+  const wrap = document.getElementById('floorBars');
+  if (Object.values(totals).every(v => v === 0)) {
+    wrap.innerHTML = '<div class="empty">No visits recorded in the last 24h yet.</div>';
+    return;
+  }
+  wrap.innerHTML = floors.map(f => {
+    const pct = (totals[f] / max * 100).toFixed(1);
+    return `
+      <div class="floor-bar-row">
+        <span>LEVEL 0${f}</span>
+        <div class="floor-bar-track"><div class="floor-bar-fill" style="width:${pct}%"></div></div>
+        <span>${totals[f]}</span>
+      </div>`;
+  }).join('');
+}
+
+/* ── Top stores, merged across floors ─────────────────────────────────── */
+async function loadTopStores(){
+  try {
+    const res = await fetch(`${API_BASE}/analytics/rooms?minutes=60&limit=8`);
+    const data = await res.json();
+    const items = data.items || [];
+    const el = document.getElementById('topStores');
+    if (!items.length) { el.innerHTML = '<div class="empty">No room traffic in the last 60 minutes.</div>'; return; }
+    const peak = items[0].total_visits;
+    el.innerHTML = items.map((item, i) => {
+      const pct = peak > 0 ? (item.total_visits / peak * 100).toFixed(1) : '0';
+      return `
+        <div class="room-rank-row">
+          <span class="room-rank-pos">${i+1}</span>
+          <span class="room-rank-name" title="${item.name}">${item.room_id} · ${item.name} <span style="color:var(--text-dim)">(L0${item.floor})</span></span>
+          <span class="room-rank-count">${item.total_visits}</span>
+          <div class="room-rank-bar-track"><div class="room-rank-bar-fill" style="width:${pct}%"></div></div>
+        </div>`;
+    }).join('');
+  } catch {
+    document.getElementById('topStores').innerHTML = '<div class="empty">Backend not reachable.</div>';
+  }
+}
+
+/* ── Hourly traffic (24h, bucketed to hours from the 5-min aggregate) ──── */
+function buildHourlyFloorSelect(){
+  const select = document.getElementById('hourlyFloorSelect');
+  select.innerHTML = Object.keys(floorsConfig).map(f => `<option value="${f}">Level 0${f}</option>`).join('');
+  select.addEventListener('change', loadHourlyTraffic);
+}
+
+async function loadHourlyTraffic(){
+  const floor = document.getElementById('hourlyFloorSelect').value || Object.keys(floorsConfig)[0];
+  const svg = document.getElementById('hourlyChart');
+  const empty = document.getElementById('hourlyEmpty');
+  try {
+    const res = await fetch(`${API_BASE}/analytics/floor/${floor}?minutes=1440`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) { svg.style.display = 'none'; empty.style.display = 'block'; return; }
+
+    // Roll the 5-min buckets up into 24 hourly buckets (max occupancy per hour).
+    const hourly = new Array(24).fill(0);
+    items.forEach(i => {
+      const hour = new Date(i.bucket).getHours();
+      hourly[hour] = Math.max(hourly[hour], i.device_count);
+    });
+
+    svg.style.display = 'block';
+    empty.style.display = 'none';
+    const peak = Math.max(...hourly, 1);
+    const W = 100, H = 40, barW = (W / 24) - 0.4;
+    let rects = '';
+    hourly.forEach((v, h) => {
+      const x = (h / 24) * W;
+      const barH = (v / peak) * (H - 8);
+      rects += `<rect x="${x.toFixed(2)}" y="${(H-barH).toFixed(2)}" width="${barW.toFixed(2)}" height="${barH.toFixed(2)}" fill="#2DD4A7" rx="0.3"/>`;
+      if (h % 4 === 0) {
+        rects += `<text x="${x.toFixed(2)}" y="${H+3.5}" font-family="IBM Plex Mono, monospace" font-size="2.6" fill="#93A0AE">${h}h</text>`;
+      }
+    });
+    svg.innerHTML = rects;
+  } catch {
+    svg.style.display = 'none';
+    empty.style.display = 'block';
+    empty.textContent = 'Backend not reachable.';
+  }
+}
+
+/* ── Heatmap preview tiles, one per floor ─────────────────────────────── */
+function buildHeatmapTiles(){
+  const grid = document.getElementById('heatmapGrid');
+  grid.innerHTML = Object.keys(floorsConfig).map(f => `
+    <div class="heatmap-tile">
+      <div class="tile-label">LEVEL 0${f}</div>
+      <canvas id="heatCanvas${f}"></canvas>
+    </div>`).join('');
+}
+
+async function loadHeatmaps(){
+  for (const floor of Object.keys(floorsConfig)) {
+    const dims = floorsConfig[floor];
+    const canvas = document.getElementById(`heatCanvas${floor}`);
+    if (!canvas) continue;
+
+    const dpr = window.devicePixelRatio || 1;
+    const displayWidth = canvas.clientWidth || 300;
+    const displayHeight = Math.round(displayWidth * (dims.rows / dims.cols));
+    canvas.style.height = `${displayHeight}px`;
+    canvas.width = Math.round(displayWidth * dpr);
+    canvas.height = Math.round(displayHeight * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(canvas.width / dims.cols, 0, 0, canvas.height / dims.rows, 0, 0);
+
+    // base floor tone
+    ctx.fillStyle = '#0E2A3D';
+    ctx.fillRect(0, 0, dims.cols, dims.rows);
+
+    let items = [];
+    try {
+      const res = await fetch(`${API_BASE}/analytics/heatmap?floor=${floor}&minutes=60`);
+      const data = await res.json();
+      items = data.items || [];
+    } catch { /* leave tile blank below */ }
+
+    const intensityByRoom = {};
+    items.forEach(i => { intensityByRoom[i.room_id] = i.intensity; });
+    const hasData = items.some(i => i.intensity > 0);
+
+    (dims.rooms || []).forEach(room => {
+      const intensity = intensityByRoom[room.id] ?? 0;
+      ctx.fillStyle = intensity > 0 ? heatColor(intensity) : 'rgba(232,222,200,0.06)';
+      ctx.fillRect(room.col_start, room.row_start, room.col_end - room.col_start, room.row_end - room.row_start);
+      ctx.strokeStyle = 'rgba(232,222,200,0.25)';
+      ctx.lineWidth = dims.rows * 0.003;
+      ctx.strokeRect(room.col_start, room.row_start, room.col_end - room.col_start, room.row_end - room.row_start);
+    });
+
+    if (!hasData) {
+      ctx.fillStyle = 'rgba(11,18,32,0.55)';
+      ctx.fillRect(0, 0, dims.cols, dims.rows);
+      ctx.fillStyle = '#93A0AE';
+      ctx.font = `${dims.rows * 0.06}px 'IBM Plex Mono', monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('no traffic data yet', dims.cols / 2, dims.rows / 2);
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
+/* ── Dwell / traffic snapshot summary ─────────────────────────────────── */
+async function loadDwellSnapshot(){
+  try {
+    const res = await fetch(`${API_BASE}/analytics/rooms?minutes=60&limit=100`);
+    const data = await res.json();
+    const items = data.items || [];
+    document.getElementById('roomsTracked').textContent = items.length;
+    document.getElementById('totalVisits').textContent = items.reduce((s, i) => s + i.total_visits, 0);
+
+    const byFloor = {};
+    items.forEach(i => { byFloor[i.floor] = (byFloor[i.floor] || 0) + i.total_visits; });
+    const busiest = Object.entries(byFloor).sort((a, b) => b[1] - a[1])[0];
+    document.getElementById('busiestFloor').textContent = busiest ? `Level 0${busiest[0]}` : '—';
+  } catch {
+    document.getElementById('roomsTracked').textContent = '—';
+    document.getElementById('totalVisits').textContent = '—';
+    document.getElementById('busiestFloor').textContent = '—';
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

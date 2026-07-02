@@ -22,15 +22,21 @@
 
 import asyncio
 import json
+import logging
 import os
 import time
+import traceback
 from contextlib import asynccontextmanager
 
 import aiomqtt
 import asyncpg
 import redis.asyncio as redis
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("ips.server")
+logging.basicConfig(level=logging.INFO)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
@@ -54,12 +60,22 @@ POSTGRES_DSN = (
 )
 
 # Comma-separated list — e.g. "http://localhost:8080,http://192.168.1.50:8080"
-# Default covers local dev only. Add your demo-day host/IP before presenting
-# from anywhere other than localhost, or /floors and /health will be silently
-# blocked by the browser with no error in the server logs.
+#
+# IMPORTANT: the browser's Origin header must match one of these EXACTLY,
+# including scheme and port — "http://localhost:8080" and
+# "http://127.0.0.1:8080" are two *different* origins to a browser, even
+# though they reach the same machine. Opening the dashboard from whichever
+# one isn't allow-listed is the most common real cause of "CORS blocked"
+# errors, so both loopback forms are allowed by default. Add your demo-day
+# host/IP too before presenting from anywhere other than localhost, or
+# requests from that origin will be silently blocked by the browser with
+# no error in the server logs.
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080").split(",")
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8080,http://127.0.0.1:8080",
+    ).split(",")
     if origin.strip()
 ]
 

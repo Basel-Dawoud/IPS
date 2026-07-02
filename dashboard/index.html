@@ -15,6 +15,7 @@
     --line-dim:   #5C6B73;
     --panel:      #101B2C;
     --panel-edge: #1C2D40;
+    --panel-raised: #142238;
     --text:       #F2EFE6;
     --text-dim:   #93A0AE;
     --signal:     #2DD4A7;
@@ -22,6 +23,7 @@
     --zone-2:     #1FA9C7;
     --zone-3:     #F2A33C;
     --danger:     #E2574C;
+    --amber:      #F2A33C;
 
     --font-display: 'Space Grotesk', sans-serif;
     --font-ui:      'Inter', sans-serif;
@@ -41,6 +43,12 @@
     flex-direction: column;
   }
 
+  /* thin, quiet scrollbars everywhere in the app */
+  ::-webkit-scrollbar{ width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track{ background: transparent; }
+  ::-webkit-scrollbar-thumb{ background: var(--panel-edge); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover{ background: var(--line-dim); }
+
   /* ── Header ───────────────────────────────────────────────────────────── */
   header{
     display: flex;
@@ -49,9 +57,14 @@
     padding: 14px 24px;
     border-bottom: 1px solid var(--panel-edge);
     flex-shrink: 0;
+    background: linear-gradient(180deg, rgba(20,34,56,0.6), transparent);
   }
   .brand{ display: flex; align-items: baseline; gap: 10px; }
-  .brand .mark{ font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.02em; }
+  .brand .mark{
+    font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.02em;
+    background: linear-gradient(90deg, var(--text) 60%, var(--signal));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
   .brand .sub{ font-size: 13px; color: var(--text-dim); }
 
   .health-strip{
@@ -72,27 +85,34 @@
     width: 7px; height: 7px;
     border-radius: 50%;
     background: var(--danger);
+    transition: background 0.2s, box-shadow 0.2s;
   }
-  .health-dot.ok{ background: var(--signal); }
+  .health-dot.ok{ background: var(--signal); box-shadow: 0 0 6px 0 var(--signal-dim); }
 
   .sheet-tabs{ display: flex; gap: 2px; margin-left: auto; }
   .sheet-tab{
+    position: relative;
     font-family: var(--font-mono);
     font-size: 12px;
     letter-spacing: 0.04em;
     color: var(--text-dim);
     background: var(--panel);
     border: 1px solid var(--panel-edge);
-    padding: 8px 16px;
+    padding: 8px 18px;
     cursor: pointer;
     display: flex;
     align-items: center;
     gap: 8px;
-    transition: color 0.15s, border-color 0.15s;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
   }
-  .sheet-tab:first-child{ border-radius: 4px 0 0 4px; }
-  .sheet-tab:last-child{ border-radius: 0 4px 4px 0; border-left: none; }
+  .sheet-tab:hover{ color: var(--text); }
+  .sheet-tab:first-child{ border-radius: 6px 0 0 6px; }
+  .sheet-tab:last-child{ border-radius: 0 6px 6px 0; border-left: none; }
   .sheet-tab.active{ color: var(--text); border-color: var(--signal); background: #0F2520; }
+  .sheet-tab.active::after{
+    content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px;
+    background: var(--signal); border-radius: 2px;
+  }
   .sheet-tab .count{ font-weight: 600; min-width: 14px; text-align: right; }
   .sheet-tab.active .count{ color: var(--signal); }
   .sheet-tab:not(.active) .count{ color: var(--text-dim); }
@@ -131,39 +151,50 @@
     width: 100%;
     max-height: 100%;
     border: 1px solid var(--panel-edge);
-    border-radius: 6px;
+    border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 20px 60px -20px rgba(0,0,0,0.6);
+    background: var(--paper);
   }
-  .map-frame img{ display: block; width: 100%; height: 100%; image-rendering: pixelated; }
-  .map-frame canvas{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; transition: opacity 0.5s ease; }
-  
-  .floor-transition {
-    animation: floorFade 0.6s ease-in-out;
-  }
-  @keyframes floorFade {
-    0% { opacity: 0.3; transform: scale(0.98); }
-    100% { opacity: 1; transform: scale(1); }
+  .map-frame img{ display: block; width: 100%; height: 100%; }
+  .map-frame canvas{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+
+  .floor-transition{ animation: floorFade 0.5s cubic-bezier(.2,.8,.2,1); }
+  @keyframes floorFade{
+    0%   { opacity: 0.15; transform: scale(0.985); filter: blur(2px); }
+    100% { opacity: 1;    transform: scale(1);      filter: blur(0); }
   }
 
-  .calib-note{
+  .calib-note, .heatmap-note{
     position: absolute;
     bottom: 14px; right: 14px;
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--zone-3);
-    background: rgba(11,18,32,0.85);
-    border: 1px solid var(--zone-3);
+    background: rgba(11,18,32,0.88);
     padding: 6px 10px;
     border-radius: 4px;
     max-width: 260px;
     text-align: right;
     line-height: 1.5;
   }
+  .calib-note{ color: var(--zone-3); border: 1px solid var(--zone-3); }
+  .heatmap-note{ color: var(--zone-2); border: 1px solid var(--zone-2); bottom: 14px; left: 14px; right: auto; text-align: left; }
+
+  .heatmap-legend{
+    position: absolute; top: 14px; left: 14px;
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(11,18,32,0.88); border: 1px solid var(--panel-edge);
+    padding: 6px 10px; border-radius: 4px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+  }
+  .heatmap-legend .bar{
+    width: 70px; height: 6px; border-radius: 3px;
+    background: linear-gradient(90deg, #2DD4A7, #1FA9C7, #F2A33C, #E2574C);
+  }
 
   /* ── Right instrument panel ──────────────────────────────────────────── */
   .panel{
-    width: 300px;
+    width: 310px;
     flex-shrink: 0;
     border-left: 1px solid var(--panel-edge);
     background: var(--panel);
@@ -173,35 +204,68 @@
   }
   .panel-section{ padding: 18px 20px; border-bottom: 1px solid var(--panel-edge); }
   .panel-label{
+    display: flex; align-items: center; justify-content: space-between;
     font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
     color: var(--text-dim); margin-bottom: 10px;
   }
   .occupancy-readout{ font-family: var(--font-mono); font-size: 42px; font-weight: 600; color: var(--signal); line-height: 1; }
   .occupancy-sub{ font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .trend{ font-family: var(--font-mono); font-size: 11px; }
+  .trend.up{ color: var(--signal); }
+  .trend.down{ color: var(--danger); }
+  .trend.flat{ color: var(--text-dim); }
 
   .legend-row{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-dim); padding: 4px 0; }
-  .swatch{ width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+  .swatch{ width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  .swatch.dot-swatch{ border-radius: 50%; }
+
+  /* Stat grids used by both Occupancy and Live Analytics panels */
+  .stat-grid{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .stat-cell{
+    background: var(--panel-raised); border: 1px solid var(--panel-edge); border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .stat-cell .k{ color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-cell .v{ font-family: var(--font-mono); color: var(--text); margin-top: 3px; font-size: 15px; font-weight: 600; }
+  .stat-cell .v.small{ font-size: 13px; font-weight: 500; }
+  .stat-cell .v.ok{ color: var(--signal); }
+  .stat-cell .v.warn{ color: var(--amber); }
 
   /* Selected device panel */
   .selected-empty{ font-size: 12px; color: var(--text-dim); }
-  .selected-title{ font-family: var(--font-mono); font-size: 14px; color: var(--signal); margin-bottom: 10px; }
+  .selected-title{
+    font-family: var(--font-mono); font-size: 14px; color: var(--signal); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .selected-title .motion-badge{
+    font-size: 9px; padding: 2px 6px; border-radius: 999px; text-transform: uppercase;
+    letter-spacing: 0.04em; font-family: var(--font-ui); font-weight: 600;
+  }
+  .motion-badge.walking{ background: var(--signal-dim); color: var(--signal); }
+  .motion-badge.stationary{ background: rgba(242,163,60,0.16); color: var(--amber); }
   .selected-grid{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
   .selected-row{ font-size: 12px; }
   .selected-row .k{ color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
   .selected-row .v{ font-family: var(--font-mono); color: var(--text); margin-top: 2px; }
+  .selected-row.wide{ grid-column: 1 / -1; }
 
   .device-list{ flex: 1; overflow-y: auto; }
   .device-row{
-    display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+    display: grid; grid-template-columns: 10px 1fr auto; gap: 2px 8px;
+    align-items: center;
     padding: 10px 20px; border-bottom: 1px solid var(--panel-edge);
     font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+    transition: background 0.12s;
   }
   .device-row:hover{ background: rgba(255,255,255,0.03); }
   .device-row.selected{ background: rgba(45, 212, 167, 0.08); }
+  .device-row .motion-dot{ width: 8px; height: 8px; border-radius: 50%; grid-row: 1 / 3; align-self: center; }
+  .device-row .motion-dot.walking{ background: var(--signal); }
+  .device-row .motion-dot.stationary{ background: var(--amber); }
   .device-row .id{ color: var(--text); }
   .device-row .floor-badge{ font-size: 10px; color: var(--ink); background: var(--signal); border-radius: 3px; padding: 1px 6px; align-self: start; }
-  .device-row .coords{ color: var(--text-dim); grid-column: 1 / -1; }
-  .device-row .updated{ color: var(--line-dim); grid-column: 1 / -1; font-size: 11px; }
+  .device-row .coords{ color: var(--text-dim); grid-column: 2 / 3; }
+  .device-row .updated{ color: var(--line-dim); grid-column: 2 / 3; font-size: 11px; }
 
   .empty-state{ padding: 30px 20px; color: var(--text-dim); font-size: 13px; text-align: center; }
 
@@ -212,7 +276,7 @@
   .analytics-toggle{
     display: flex; align-items: center; justify-content: space-between;
     font-size: 12px; color: var(--text); cursor: pointer; user-select: none;
-    margin-bottom: 12px;
+    margin-bottom: 4px;
   }
   .analytics-toggle input{ accent-color: var(--zone-2); }
   .analytics-window{
@@ -236,6 +300,9 @@
   .room-rank-bar-fill{ height: 100%; background: var(--zone-2); border-radius: 2px; }
   .room-rank-count{ font-family: var(--font-mono); color: var(--zone-2); font-size: 11px; }
   .calib-readout{ font-family: var(--font-mono); font-size: 11px; color: var(--zone-2); margin-top: 8px; min-height: 16px; }
+
+  a.analytics-link{ color: var(--signal); text-decoration: none; font-family: var(--font-mono); font-size: 11px; }
+  a.analytics-link:hover{ text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -261,6 +328,12 @@
       <div class="map-frame" id="mapFrame">
         <img id="floorImg" alt="Floor plan">
         <canvas id="overlay"></canvas>
+        <div class="heatmap-legend" id="heatmapLegend" style="display:none">
+          <span>low</span><span class="bar"></span><span>high</span>
+        </div>
+        <div class="heatmap-note" id="heatmapNote" style="display:none">
+          No store-traffic data yet for this floor/window.
+        </div>
         <div class="calib-note" id="calibNote" style="display:none">
           meters_per_cell not set in server/floors.json — live dots are
           hidden until calibrated.
@@ -270,54 +343,63 @@
 
     <div class="panel">
       <div class="panel-section">
-        <div class="panel-label">Occupancy</div>
-        <div class="selected-grid">
-            <div class="selected-row"><div class="k">Current</div><div class="v" id="occCurrent">0</div></div>
-            <div class="selected-row"><div class="k">Peak Today</div><div class="v" id="occPeak">0</div></div>
-            <div class="selected-row"><div class="k">Average</div><div class="v" id="occAvg">0</div></div>
-            <div class="selected-row"><div class="k">Unique Today</div><div class="v" id="occUnique">0</div></div>
+        <div class="panel-label">
+          <span>Occupancy</span>
+          <span class="trend flat" id="occTrend">—</span>
         </div>
+        <div class="occupancy-readout" id="occCurrent">0</div>
         <div class="occupancy-sub" id="occupancyTotal">0 total across both levels</div>
+        <div class="stat-grid" style="margin-top:12px">
+          <div class="stat-cell"><div class="k">Peak · 24h</div><div class="v" id="occPeak">—</div></div>
+          <div class="stat-cell"><div class="k">Average · 24h</div><div class="v" id="occAvg">—</div></div>
+          <div class="stat-cell"><div class="k">Unique · session</div><div class="v" id="occUnique">0</div></div>
+          <div class="stat-cell"><div class="k">Devices online</div><div class="v ok" id="statOnline">0</div></div>
+        </div>
       </div>
 
       <div class="panel-section" id="selectedSection">
-        <div class="panel-label">Selected device</div>
+        <div class="panel-label"><span>Selected device</span></div>
         <div class="selected-empty" id="selectedEmpty">Click a device on the map or in the list below.</div>
         <div id="selectedContent" style="display:none">
-          <div class="selected-title" id="selTitle"></div>
+          <div class="selected-title">
+            <span id="selTitle"></span>
+            <span class="motion-badge" id="selMotionBadge"></span>
+          </div>
           <div class="selected-grid">
-            <div class="selected-row"><div class="k">ID</div><div class="v" id="selId">—</div></div>
             <div class="selected-row"><div class="k">Floor</div><div class="v" id="selFloor">—</div></div>
             <div class="selected-row"><div class="k">Battery</div><div class="v" id="selBattery">—</div></div>
-            <div class="selected-row"><div class="k">Motion</div><div class="v" id="selMotion">—</div></div>
-            <div class="selected-row"><div class="k">Last update</div><div class="v" id="selAge">—</div></div>
-            <div class="selected-row"><div class="k">Room</div><div class="v" id="selRoom">—</div></div>
             <div class="selected-row"><div class="k">Speed</div><div class="v" id="selSpeed">—</div></div>
-            <div class="selected-row"><div class="k">Trajectory</div><div class="v" id="selTrajectory">—</div></div>
-            <div class="selected-row"><div class="k">Time in Room</div><div class="v" id="selDwell">—</div></div>
-            <div class="selected-row"><div class="k">Position</div><div class="v" id="selPos">—</div></div>
+            <div class="selected-row"><div class="k">Heading</div><div class="v" id="selTrajectory">—</div></div>
+            <div class="selected-row"><div class="k">Room</div><div class="v" id="selRoom">—</div></div>
+            <div class="selected-row"><div class="k">Time in room</div><div class="v" id="selDwell">—</div></div>
+            <div class="selected-row"><div class="k">Accuracy</div><div class="v" id="selAccuracy">—</div></div>
+            <div class="selected-row"><div class="k">Last update</div><div class="v" id="selAge">—</div></div>
+            <div class="selected-row wide"><div class="k">Position</div><div class="v" id="selPos">—</div></div>
           </div>
         </div>
       </div>
 
       <div class="panel-section">
-        <div class="panel-label">Live Analytics</div>
-        <div class="selected-grid">
-            <div class="selected-row"><div class="k">Backend Latency</div><div class="v" id="statLatency">12ms</div></div>
-            <div class="selected-row"><div class="k">MQTT msgs/sec</div><div class="v" id="statMqttRate">0</div></div>
-            <div class="selected-row"><div class="k">Devices Online</div><div class="v" id="statOnline">0</div></div>
-            <div class="selected-row"><div class="k">Updates/sec</div><div class="v" id="statUpdateRate">0</div></div>
-            <div class="selected-row"><div class="k">Today's Visitors</div><div class="v" id="statVisitors">0</div></div>
-            <div class="selected-row"><div class="k">Avg Dwell Time</div><div class="v" id="statDwell">0m</div></div>
+        <div class="panel-label"><span>Live analytics</span></div>
+        <div class="stat-grid">
+          <div class="stat-cell"><div class="k">Backend latency</div><div class="v small" id="statLatency">—</div></div>
+          <div class="stat-cell"><div class="k">MQTT msgs/sec</div><div class="v small" id="statMqttRate">0.0</div></div>
+          <div class="stat-cell"><div class="k">Updates/sec</div><div class="v small" id="statUpdateRate">0.0</div></div>
+          <div class="stat-cell"><div class="k">Today's visitors*</div><div class="v small" id="statVisitors">0</div></div>
+          <div class="stat-cell" style="grid-column:1/-1"><div class="k">Avg dwell time (this session)</div><div class="v small" id="statDwell">—</div></div>
+        </div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:8px;line-height:1.4">
+          * counted from devices seen since this dashboard was opened, not full-day history.
         </div>
       </div>
 
       <div class="panel-section">
-        <div class="panel-label">Legend</div>
+        <div class="panel-label"><span>Legend</span></div>
         <div class="legend-row"><span class="swatch" style="background:var(--line)"></span> Wall / structure</div>
-        <div class="legend-row"><span class="swatch" style="background:var(--zone-2)"></span> Stairs / Transition</div>
-        <div class="legend-row"><span class="swatch" style="background:var(--zone-3)"></span> Special Zone</div>
-        <div class="legend-row"><span class="swatch" style="background:var(--signal)"></span> Live device</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--zone-2)"></span> Tagged zone · type 2</div>
+        <div class="legend-row"><span class="swatch" style="background:var(--zone-3)"></span> Tagged zone · type 3</div>
+        <div class="legend-row"><span class="swatch dot-swatch" style="background:var(--signal)"></span> Live device · walking</div>
+        <div class="legend-row"><span class="swatch dot-swatch" style="background:var(--amber)"></span> Live device · stationary</div>
       </div>
 
       <div class="panel-section">
@@ -326,15 +408,17 @@
           <input type="checkbox" id="heatmapToggle">
         </label>
 
-        <div class="panel-label" style="margin-top:14px">Occupancy · last 60 min</div>
+        <div class="panel-label" style="margin-top:14px"><span>Occupancy · last 60 min</span></div>
         <div class="analytics-window">crowd_analytics · 5-min buckets · floor <span id="occChartFloorLabel">—</span></div>
         <svg class="occupancy-chart" id="occupancyChart" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
         <div class="occupancy-chart-empty" id="occupancyChartEmpty" style="display:none">No data yet for this window.</div>
 
-        <div class="panel-label" style="margin-top:14px">Most visited stores · 60 min</div>
+        <div class="panel-label" style="margin-top:14px"><span>Most visited stores · 60 min</span></div>
         <div id="mostVisitedList">
           <div class="occupancy-chart-empty">No room traffic yet.</div>
         </div>
+
+        <div style="margin-top:14px"><a class="analytics-link" href="analytics.html">Open full analytics page →</a></div>
       </div>
 
       <div class="panel-section">
@@ -373,6 +457,9 @@ const HEALTH_POLL_MS = 5000;
 const TRAIL_LENGTH = 16;
 const ANALYTICS_POLL_MS = 15000;   // aggregates update in 1-min buckets server-side; no need to poll faster
 const ANALYTICS_WINDOW_MINUTES = 60;
+const RATE_WINDOW_MS = 5000;       // rolling window used for msgs/sec, updates/sec
+const MIN_DWELL_SAMPLE_MS = 2000;  // ignore room "visits" shorter than this — sensor noise, not a real stop
+const MAX_DWELL_SAMPLES = 200;
 
 /* ════════════════════════════════════════════════════════════════════════
    STATE
@@ -383,9 +470,15 @@ let activeFloor = null;
 let selectedDeviceId = null;
 let heatmapEnabled = false;
 let heatmapData = {};        // room_id -> intensity (0..1), refreshed on each analytics poll
+let heatmapHasData = false;
 
 const devicesByFloor = {};   // floor -> Map(device_id -> {prev, target, trail, ...})
 const statusByDevice = {};   // device_id -> latest status payload
+const seenDeviceIds = new Set();  // every device_id observed this session — "unique visitors" proxy
+const dwellSamples = [];          // completed room-dwell durations (ms), this session
+let wsMsgTimestamps = [];         // rolling timestamps of every WS message (mqtt msgs/sec proxy)
+let positionMsgTimestamps = [];   // rolling timestamps of position updates only (updates/sec)
+let prevOccupancy = 0;
 
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -395,6 +488,8 @@ const calibNote = document.getElementById('calibNote');
 const calibToggle = document.getElementById('calibToggle');
 const calibReadout = document.getElementById('calibReadout');
 const heatmapToggle = document.getElementById('heatmapToggle');
+const heatmapNote = document.getElementById('heatmapNote');
+const heatmapLegend = document.getElementById('heatmapLegend');
 
 /* ════════════════════════════════════════════════════════════════════════
    BOOT — fetch floor metadata from the backend before building anything
@@ -413,9 +508,18 @@ async function boot(){
   pollHealth();
   setInterval(pollHealth, HEALTH_POLL_MS);
 
-  heatmapToggle.addEventListener('change', () => { heatmapEnabled = heatmapToggle.checked; });
+  heatmapToggle.addEventListener('change', () => {
+    heatmapEnabled = heatmapToggle.checked;
+    heatmapLegend.style.display = heatmapEnabled ? 'flex' : 'none';
+    if (heatmapEnabled) fetchHeatmapData();  // refresh immediately instead of waiting for the next poll
+    updateHeatmapNote();
+  });
+
+  window.addEventListener('resize', () => resizeCanvas(floorsConfig[activeFloor]));
+
   fetchAnalytics();
   setInterval(fetchAnalytics, ANALYTICS_POLL_MS);
+  setInterval(updateRateStats, 1000);
 
   requestAnimationFrame(renderFrame);
 }
@@ -438,6 +542,7 @@ function buildTabs(){
 }
 
 function setActiveFloor(floor){
+  if (floor === activeFloor) return;
   activeFloor = floor;
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.toggle('active', t.dataset.floor === floor));
   loadFloorImage(floor);
@@ -448,15 +553,45 @@ function setActiveFloor(floor){
 function loadFloorImage(floor){
   const dims = floorsConfig[floor];
   mapFrame.style.aspectRatio = `${dims.cols} / ${dims.rows}`;
-  
-  // Animation effect
+
   mapFrame.classList.remove('floor-transition');
-  void mapFrame.offsetWidth; // trigger reflow
+  void mapFrame.offsetWidth; // restart the CSS transition
   mapFrame.classList.add('floor-transition');
 
   floorImg.src = dims.image;
-  canvas.width = dims.cols;
-  canvas.height = dims.rows;
+  resizeCanvas(dims);
+  // The map-frame's box may not have its final size until the browser has
+  // laid out the new aspect-ratio, so resize again on the next couple of
+  // frames to guarantee the canvas buffer matches the final on-screen size
+  // (this is what actually fixes blurry dots/labels — see resizeCanvas).
+  requestAnimationFrame(() => resizeCanvas(dims));
+  floorImg.onload = () => resizeCanvas(dims);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   CANVAS RESOLUTION — the overlay canvas's pixel buffer is sized to match
+   its *actual on-screen* size in device pixels (not the small grid-unit
+   dimensions of the floor map), then a transform maps drawing calls back
+   into grid-unit coordinates. Without this, the browser stretches a low
+   resolution bitmap to fill the panel and every dot/label comes out
+   blurry — this is the fix.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function resizeCanvas(dims){
+  if (!dims) return;
+  const rect = mapFrame.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const pixelWidth = Math.max(1, Math.round(rect.width * dpr));
+  const pixelHeight = Math.max(1, Math.round(rect.height * dpr));
+
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+
+  const scaleX = pixelWidth / dims.cols;
+  const scaleY = pixelHeight / dims.rows;
+  ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -507,9 +642,13 @@ function connectWebSocket(){
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
 
+    const now = Date.now();
+    wsMsgTimestamps.push(now);
+
     if (msg.type === 'snapshot') {
       msg.items.forEach(item => upsertPosition(item));
     } else if (msg.type === 'position') {
+      positionMsgTimestamps.push(now);
       upsertPosition(msg);
     } else if (msg.type === 'status') {
       statusByDevice[msg.device_id] = msg;
@@ -525,17 +664,22 @@ function upsertPosition(item){
   const floor = String(item.floor);
   if (!devicesByFloor[floor]) return; // unknown floor, ignore safely
 
+  seenDeviceIds.add(item.device_id);
+
   const map = devicesByFloor[floor];
   const now = Date.now();
   const target = { x: item.x, y: item.y, accuracy: item.accuracy || 1.0 };
   const existing = map.get(item.device_id);
 
   if (existing) {
+    const dtSeconds = Math.max(0.2, (now - existing.animStart) / 1000);
+    existing.speedMps = Math.hypot(target.x - existing.target.x, target.y - existing.target.y) / dtSeconds;
     existing.prev = existing.target;
     existing.target = target;
     existing.animStart = now;
     existing.trail.push(target);
     if (existing.trail.length > TRAIL_LENGTH) existing.trail.shift();
+    trackRoomDwell(existing, item.room_id, now);
   } else {
     map.set(item.device_id, {
       prev: target,
@@ -544,6 +688,9 @@ function upsertPosition(item){
       device_id: item.device_id,
       floor: floor,
       trail: [target],
+      speedMps: 0,
+      currentRoom: item.room_id || null,
+      roomEnteredAt: now,
     });
   }
   const entry = map.get(item.device_id);
@@ -551,6 +698,19 @@ function upsertPosition(item){
   entry.raw = item;
 
   if (item.device_id === selectedDeviceId) updateSelectedPanel();
+}
+
+function trackRoomDwell(entry, newRoomId, now){
+  const room = newRoomId || null;
+  if (room === entry.currentRoom) return; // still in the same room/corridor segment
+
+  const dwellMs = now - entry.roomEnteredAt;
+  if (entry.currentRoom && dwellMs >= MIN_DWELL_SAMPLE_MS) {
+    dwellSamples.push(dwellMs);
+    if (dwellSamples.length > MAX_DWELL_SAMPLES) dwellSamples.shift();
+  }
+  entry.currentRoom = room;
+  entry.roomEnteredAt = now;
 }
 
 function updateCounts(){
@@ -561,14 +721,25 @@ function updateCounts(){
   });
   const activeCount = devicesByFloor[activeFloor].size;
   const total = Object.values(devicesByFloor).reduce((sum, m) => sum + m.size, 0);
-  
-  // Update current floor occupancy
-  const occCurrentEl = document.getElementById('occCurrent');
-  if (occCurrentEl) occCurrentEl.textContent = activeCount;
-  
-  // Update total occupancy readout
-  const totalEl = document.getElementById('occupancyTotal');
-  if (totalEl) totalEl.textContent = `${total} total across both levels`;
+
+  document.getElementById('occCurrent').textContent = activeCount;
+  document.getElementById('occupancyTotal').textContent = `${total} total across both levels`;
+  document.getElementById('statOnline').textContent = total;
+  document.getElementById('occUnique').textContent = seenDeviceIds.size;
+
+  const trendEl = document.getElementById('occTrend');
+  if (activeCount > prevOccupancy) { trendEl.textContent = '▲ rising'; trendEl.className = 'trend up'; }
+  else if (activeCount < prevOccupancy) { trendEl.textContent = '▼ falling'; trendEl.className = 'trend down'; }
+  else { trendEl.textContent = '● steady'; trendEl.className = 'trend flat'; }
+  prevOccupancy = activeCount;
+
+  if (dwellSamples.length) {
+    const avgMs = dwellSamples.reduce((a, b) => a + b, 0) / dwellSamples.length;
+    document.getElementById('statDwell').textContent = formatDuration(avgMs);
+  } else {
+    document.getElementById('statDwell').textContent = 'collecting…';
+  }
+  document.getElementById('statVisitors').textContent = seenDeviceIds.size;
 }
 
 function pruneStale(floor){
@@ -582,18 +753,40 @@ function pruneStale(floor){
   }
 }
 
+function formatDuration(ms){
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}m ${sec}s`;
+}
+
+function updateRateStats(){
+  const cutoff = Date.now() - RATE_WINDOW_MS;
+  wsMsgTimestamps = wsMsgTimestamps.filter(t => t >= cutoff);
+  positionMsgTimestamps = positionMsgTimestamps.filter(t => t >= cutoff);
+
+  const windowSec = RATE_WINDOW_MS / 1000;
+  document.getElementById('statMqttRate').textContent = (wsMsgTimestamps.length / windowSec).toFixed(1);
+  document.getElementById('statUpdateRate').textContent = (positionMsgTimestamps.length / windowSec).toFixed(1);
+}
+
 /* ════════════════════════════════════════════════════════════════════════
-   SYSTEM HEALTH STRIP
+   SYSTEM HEALTH STRIP + backend latency (measured, not simulated)
    ════════════════════════════════════════════════════════════════════════ */
 
 async function pollHealth(){
+  const started = performance.now();
   try {
     const res = await fetch(`${API_BASE}/health`);
     const data = await res.json();
+    const latencyMs = Math.round(performance.now() - started);
+    document.getElementById('statLatency').textContent = `${latencyMs}ms`;
     document.getElementById('dotMqtt').classList.toggle('ok', !!data.mqtt_connected);
     document.getElementById('dotRedis').classList.toggle('ok', !!data.redis_connected);
     document.getElementById('dotDb').classList.toggle('ok', !!data.postgres_connected);
   } catch {
+    document.getElementById('statLatency').textContent = 'timeout';
     ['dotMqtt', 'dotRedis', 'dotDb'].forEach(id => document.getElementById(id).classList.remove('ok'));
   }
 }
@@ -616,8 +809,10 @@ function renderDeviceList(){
   list.innerHTML = all.map(d => {
     const ageSec = Math.max(0, Math.round((Date.now() - d.lastSeen) / 1000));
     const sel = d.device_id === selectedDeviceId ? ' selected' : '';
+    const motion = d.raw.motion === 'walking' ? 'walking' : 'stationary';
     return `
       <div class="device-row${sel}" data-id="${d.device_id}">
+        <span class="motion-dot ${motion}"></span>
         <span class="id">${d.device_id}</span>
         <span class="floor-badge">L0${d.floor}</span>
         <span class="coords">x ${d.target.x.toFixed(1)}  y ${d.target.y.toFixed(1)}</span>
@@ -650,6 +845,8 @@ function clearSelection(){
   renderDeviceList();
 }
 
+const COMPASS_DIRS = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'];
+
 function updateSelectedPanel(){
   const d = findDevice(selectedDeviceId);
   if (!d) { clearSelection(); return; }
@@ -657,21 +854,28 @@ function updateSelectedPanel(){
   document.getElementById('selectedEmpty').style.display = 'none';
   document.getElementById('selectedContent').style.display = 'block';
   document.getElementById('selTitle').textContent = d.device_id;
-  document.getElementById('selId').textContent = d.device_id.split('-')[1] || d.device_id;
+
+  const isWalking = d.raw.motion === 'walking';
+  const badge = document.getElementById('selMotionBadge');
+  badge.textContent = isWalking ? 'walking' : 'stationary';
+  badge.className = 'motion-badge ' + (isWalking ? 'walking' : 'stationary');
+
   document.getElementById('selFloor').textContent = `Level 0${d.floor}`;
   document.getElementById('selPos').textContent = `${d.target.x.toFixed(1)}, ${d.target.y.toFixed(1)} m`;
-  document.getElementById('selMotion').textContent = d.raw.motion || '—';
-  
-  // Derived fields
-  const speed = d.prev ? Math.hypot(d.target.x - d.prev.x, d.target.y - d.prev.y).toFixed(1) : '0.0';
-  document.getElementById('selSpeed').textContent = `${speed} m/s`;
-  
+  document.getElementById('selAccuracy').textContent = d.raw.accuracy ? `${d.raw.accuracy.toFixed(1)} m` : '—';
+
   const dx = d.target.x - d.prev.x;
   const dy = d.target.y - d.prev.y;
-  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-  const dirs = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'];
-  const dir = dirs[Math.round(((angle %= 360) < 0 ? angle + 360 : angle) / 45) % 8];
-  document.getElementById('selTrajectory').textContent = speed > 0.1 ? dir : 'Stationary';
+  const dist = Math.hypot(dx, dy);
+  document.getElementById('selSpeed').textContent = `${(d.speedMps || 0).toFixed(2)} m/s`;
+  if (dist > 0.05) {
+    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angle < 0) angle += 360;
+    const dir = COMPASS_DIRS[Math.round(angle / 45) % 8];
+    document.getElementById('selTrajectory').textContent = dir;
+  } else {
+    document.getElementById('selTrajectory').textContent = 'holding';
+  }
 
   const rawRoom = d.raw.room_id;
   if (rawRoom) {
@@ -681,13 +885,13 @@ function updateSelectedPanel(){
   } else {
     document.getElementById('selRoom').textContent = 'Corridor';
   }
+  document.getElementById('selDwell').textContent = formatDuration(Date.now() - d.roomEnteredAt);
 
   const status = statusByDevice[d.device_id];
   document.getElementById('selBattery').textContent = status && status.battery != null ? `${status.battery}%` : '—';
 
   const ageSec = Math.max(0, Math.round((Date.now() - d.lastSeen) / 1000));
   document.getElementById('selAge').textContent = `${ageSec}s ago`;
-  document.getElementById('selDwell').textContent = d.raw.dwell_time ? `${Math.round(d.raw.dwell_time/60)}m` : '< 1m';
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -769,6 +973,9 @@ function drawDevices(){
     if (!cell) continue;
 
     const isSelected = d.device_id === selectedDeviceId;
+    const isWalking = d.raw.motion === 'walking';
+    const dotColor = isWalking ? '#2DD4A7' : '#F2A33C';
+    const dotColorRgb = isWalking ? '45, 212, 167' : '242, 163, 60';
 
     // fading trail
     if (d.trail.length > 1) {
@@ -780,7 +987,7 @@ function drawDevices(){
         ctx.beginPath();
         ctx.moveTo(p0.col, p0.row);
         ctx.lineTo(p1.col, p1.row);
-        ctx.strokeStyle = `rgba(45, 212, 167, ${alpha})`;
+        ctx.strokeStyle = `rgba(${dotColorRgb}, ${alpha})`;
         ctx.lineWidth = dims.rows * 0.005;
         ctx.stroke();
       }
@@ -791,16 +998,18 @@ function drawDevices(){
     // accuracy halo
     ctx.beginPath();
     ctx.arc(cell.col, cell.row, accuracyCells, 0, 2 * Math.PI);
-    ctx.fillStyle = 'rgba(45, 212, 167, 0.15)';
+    ctx.fillStyle = `rgba(${dotColorRgb}, 0.15)`;
     ctx.fill();
 
-    // breathing pulse ring
-    const pulse = 0.5 + 0.5 * Math.sin(now / 500);
-    ctx.beginPath();
-    ctx.arc(cell.col, cell.row, dims.rows * 0.012 * (1 + pulse * 0.6), 0, 2 * Math.PI);
-    ctx.strokeStyle = `rgba(45, 212, 167, ${0.5 - pulse * 0.3})`;
-    ctx.lineWidth = dims.rows * 0.004;
-    ctx.stroke();
+    // breathing pulse ring (only while actually moving — stationary devices hold steady)
+    if (isWalking) {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 500);
+      ctx.beginPath();
+      ctx.arc(cell.col, cell.row, dims.rows * 0.012 * (1 + pulse * 0.6), 0, 2 * Math.PI);
+      ctx.strokeStyle = `rgba(${dotColorRgb}, ${0.5 - pulse * 0.3})`;
+      ctx.lineWidth = dims.rows * 0.004;
+      ctx.stroke();
+    }
 
     // selection ring
     if (isSelected) {
@@ -814,21 +1023,18 @@ function drawDevices(){
     // core dot
     ctx.beginPath();
     ctx.arc(cell.col, cell.row, dims.rows * 0.012, 0, 2 * Math.PI);
-    ctx.fillStyle = '#2DD4A7';
+    ctx.fillStyle = dotColor;
     ctx.fill();
     ctx.strokeStyle = '#0B1220';
-    ctx.lineWidth = 1; // Fix blurry edges
+    ctx.lineWidth = dims.rows * 0.0025;
     ctx.stroke();
 
     // label
-    ctx.font = `bold ${dims.rows * 0.035}px 'Inter', sans-serif`; // Sharper font
+    ctx.font = `600 ${dims.rows * 0.042}px 'IBM Plex Mono', monospace`;
     ctx.fillStyle = '#F2EFE6';
     ctx.textAlign = 'center';
     const shortId = d.device_id.split('-')[1] || d.device_id;
-    ctx.shadowBlur = 4;
-    ctx.shadowColor = 'black';
-    ctx.fillText(shortId, cell.col, cell.row - dims.rows * 0.035);
-    ctx.shadowBlur = 0;
+    ctx.fillText(shortId, cell.col, cell.row - dims.rows * 0.032);
     ctx.textAlign = 'left';
   }
 }
@@ -894,33 +1100,26 @@ async function fetchAnalytics(){
     fetchOccupancyChart(),
     fetchHeatmapData(),
     fetchMostVisited(),
-    fetchLiveStats(),
+    fetch24hSummary(),
   ]);
 }
 
-async function fetchLiveStats(){
-  // Simulated backend stats for the demo, since the real backend doesn't track these yet
-  const totalDevices = Object.values(devicesByFloor).reduce((sum, m) => sum + m.size, 0);
-  document.getElementById('statOnline').textContent = totalDevices;
-  document.getElementById('statMqttRate').textContent = (totalDevices * 0.5).toFixed(1);
-  document.getElementById('statUpdateRate').textContent = (totalDevices * 0.5).toFixed(1);
-  document.getElementById('statLatency').textContent = `${Math.floor(Math.random() * 15 + 5)}ms`;
-  
-  // Fetch some summary stats for the occupancy panel
+async function fetch24hSummary(){
   try {
-      const res = await fetch(`${API_BASE}/analytics/floor/${activeFloor}?minutes=1440`);
-      const data = await res.json();
-      const items = data.items || [];
-      if (items.length > 0) {
-          const counts = items.map(i => i.device_count);
-          const peak = Math.max(...counts);
-          const avg = (counts.reduce((a,b) => a+b, 0) / counts.length).toFixed(1);
-          document.getElementById('occPeak').textContent = peak;
-          document.getElementById('occAvg').textContent = avg;
-          // occCurrent is already updated by updateCounts() from live WebSocket messages
-          document.getElementById('occUnique').textContent = Math.round(peak * 1.4); // Estimation
-      }
-  } catch(e) {}
+    const res = await fetch(`${API_BASE}/analytics/floor/${activeFloor}?minutes=1440`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length > 0) {
+      const counts = items.map(i => i.device_count);
+      const peak = Math.max(...counts);
+      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+      document.getElementById('occPeak').textContent = peak;
+      document.getElementById('occAvg').textContent = avg.toFixed(1);
+    } else {
+      document.getElementById('occPeak').textContent = '—';
+      document.getElementById('occAvg').textContent = '—';
+    }
+  } catch { /* backend not up yet — keep prior values */ }
 }
 
 async function fetchOccupancyChart(){
@@ -972,7 +1171,16 @@ async function fetchHeatmapData(){
     const data = await res.json();
     heatmapData = {};
     (data.items || []).forEach(item => { heatmapData[item.room_id] = item.intensity; });
-  } catch { heatmapData = {}; }
+    heatmapHasData = (data.items || []).some(item => item.intensity > 0);
+  } catch {
+    heatmapData = {};
+    heatmapHasData = false;
+  }
+  updateHeatmapNote();
+}
+
+function updateHeatmapNote(){
+  heatmapNote.style.display = (heatmapEnabled && !heatmapHasData) ? 'block' : 'none';
 }
 
 async function fetchMostVisited(){
@@ -1028,24 +1236,20 @@ function drawHeatmap(){
     return `rgba(${r},${g},${b},${(0.15 + intensity * 0.35).toFixed(2)})`;
   }
 
-  let hasData = false;
   rooms.forEach(room => {
     const intensity = heatmapData[room.id] ?? 0;
     if (intensity === 0) return;
-    hasData = true;
     ctx.fillStyle = heatColor(intensity);
     ctx.fillRect(room.col_start, room.row_start,
                  room.col_end - room.col_start,
                  room.row_end - room.row_start);
+    // thin outline so a tinted room reads clearly against the floor plan
+    ctx.strokeStyle = heatColor(Math.min(1, intensity + 0.3));
+    ctx.lineWidth = dims.rows * 0.003;
+    ctx.strokeRect(room.col_start, room.row_start,
+                   room.col_end - room.col_start,
+                   room.row_end - room.row_start);
   });
-  
-  // Auto-hide heatmap if no data (optional, but requested "hide it if no real data")
-  // We'll keep the toggle but maybe show a small toast or just empty rooms.
-  // The user asked to hide it if there is no real data.
-  if (!hasData && heatmapEnabled) {
-      // We don't want to force-toggle the checkbox because that's annoying UI,
-      // but we can skip drawing (already handled by the return).
-  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
