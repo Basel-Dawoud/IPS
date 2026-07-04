@@ -164,6 +164,17 @@ async function main() {
     });
   }
 
+  // Create/upsert categories
+  const categories: Record<string, string> = {};
+  for (const name of Object.values(FLOOR_CATEGORY)) {
+    const cat = await prisma.poiCategory.upsert({
+      where: { name },
+      update: {},
+      create: { name },
+    });
+    categories[name] = cat.id;
+  }
+
   // Idempotent: clear this building's POIs before re-importing. Safe while no
   // MapNode references them (no map/routing data seeded yet).
   await prisma.poi.deleteMany({ where: { buildingId: building.id } });
@@ -172,6 +183,9 @@ async function main() {
   let created = 0;
   for (const id of ids) {
     const [row, col] = CENTROIDS[id];
+    const categoryName = FLOOR_CATEGORY[floorOf(id)];
+    const categoryId = categoryName ? categories[categoryName] : null;
+
     await prisma.poi.create({
       data: {
         buildingId: building.id,
@@ -182,7 +196,7 @@ async function main() {
         x: col * CELL_SIZE,
         y: row * CELL_SIZE,
         description: STORE_DESCRIPTIONS[id] ?? null,
-        category: FLOOR_CATEGORY[floorOf(id)] ?? null,
+        categoryId: categoryId,
         aliases: STORE_ALIASES[id] ?? [],
         productKeywords: keywordsForRoom(id),
       },

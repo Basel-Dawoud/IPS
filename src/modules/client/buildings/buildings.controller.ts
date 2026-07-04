@@ -32,8 +32,8 @@ export const getBuildingById = async (req: Request, res: Response) => {
 
 export const getNearbyBuildings = async (req: Request, res: Response) => {
   try {
-    const { lat, lng, radiusMeters } = nearbyQuerySchema.parse(req.query);
-    const rows = await buildingService.getNearbyBuildings(lat, lng, radiusMeters);
+    const { lat, lng, radiusMeters, limit } = nearbyQuerySchema.parse(req.query);
+    const rows = await buildingService.getNearbyBuildings(lat, lng, radiusMeters, limit);
     return sendSuccess(res, rows);
   } catch (error: any) {
     if (error.name === "ZodError") {

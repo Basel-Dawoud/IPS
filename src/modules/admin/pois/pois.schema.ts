@@ -10,8 +10,14 @@ export const createPoiSchema = z.object({
   iconUrl: z.string().optional(),
   x: z.number(),
   y: z.number(),
+  // Optional admin-drawn zone (meters, top-left + size, same frame as x/y).
+  areaX: z.number().nullable().optional(),
+  areaY: z.number().nullable().optional(),
+  areaW: z.number().positive().nullable().optional(),
+  areaH: z.number().positive().nullable().optional(),
   description: z.string().optional(),
-  category: z.string().optional(),
+  categoryId: z.string().optional(),
+  category: z.string().optional(), // free-text category name (connectOrCreate)
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
   active: z.boolean().optional(),
@@ -25,8 +31,14 @@ export const updatePoiSchema = z.object({
   iconUrl: z.string().optional(),
   x: z.number().optional(),
   y: z.number().optional(),
+  // null clears the saved zone (app falls back to the auto-derived one).
+  areaX: z.number().nullable().optional(),
+  areaY: z.number().nullable().optional(),
+  areaW: z.number().positive().nullable().optional(),
+  areaH: z.number().positive().nullable().optional(),
   description: z.string().optional(),
-  category: z.string().optional(),
+  categoryId: z.string().optional(),
+  category: z.string().optional(), // free-text name; "" disconnects
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
   active: z.boolean().optional(),

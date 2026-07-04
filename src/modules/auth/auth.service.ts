@@ -12,6 +12,7 @@
  */
 import { OAuth2Client, type TokenPayload as GoogleTokenPayload } from "google-auth-library";
 import { createRemoteJWKSet, jwtVerify, SignJWT, type JWTPayload } from "jose";
+import * as argon2 from "argon2";
 import prisma from "../../lib/prisma";
 import { AuthProvider } from "../../generated/prisma/client";
 import type { AppJwtPayload, AuthResult, PublicUser } from "./auth.types";
@@ -113,8 +114,18 @@ async function verifyAppleIdentityToken(identityToken: string): Promise<JWTPaylo
 
 // ── Find-or-create + JWT issuance ──────────────────────────────────────
 
-function toPublicUser(u: { id: string; email: string | null; name: string | null; avatarUrl: string | null }): PublicUser {
-  return { id: u.id, email: u.email, name: u.name, avatarUrl: u.avatarUrl };
+function toPublicUser(u: any): PublicUser {
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    avatarUrl: u.avatarUrl,
+    interests: u.interests ? u.interests.map((cat: any) => cat.name) : [],
+    onboardingComplete: u.onboardingComplete ?? false,
+    age: u.age ?? null,
+    gender: u.gender ?? null,
+    hasPassword: !!u.passwordHash,
+  };
 }
 
 async function findOrCreateFromIdentity(args: {
@@ -128,13 +139,16 @@ async function findOrCreateFromIdentity(args: {
 
   const existing = await prisma.identity.findUnique({
     where: { provider_providerUserId: { provider, providerUserId } },
-    include: { user: true },
+    include: { user: { include: { interests: true } } },
   });
   if (existing) return toPublicUser(existing.user);
 
   // No identity row → either link to a User found by email, or create both.
   const linkedUser = email
-    ? await prisma.user.findUnique({ where: { email } })
+    ? await prisma.user.findUnique({
+        where: { email },
+        include: { interests: true },
+      })
     : null;
 
   if (linkedUser) {
@@ -151,6 +165,7 @@ async function findOrCreateFromIdentity(args: {
       avatarUrl: avatarUrl ?? null,
       identities: { create: { provider, providerUserId } },
     },
+    include: { interests: true },
   });
   return toPublicUser(created);
 }
@@ -210,6 +225,79 @@ export async function verifyAppToken(token: string): Promise<AppJwtPayload> {
 }
 
 export async function getUserById(id: string): Promise<PublicUser | null> {
-  const u = await prisma.user.findUnique({ where: { id } });
+  const u = await prisma.user.findUnique({
+    where: { id },
+    include: { interests: true },
+  });
   return u ? toPublicUser(u) : null;
+}
+
+export async function signUpWithEmail(
+  email: string,
+  password: string,
+  name?: string
+): Promise<AuthResult> {
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) {
+    throw new AuthError("invalid-token", "Email already in use");
+  }
+
+  // Hash the password using Argon2id (default in argon2 package)
+  const passwordHash = await argon2.hash(password);
+
+  const user = await prisma.user.create({
+    data: {
+      email,
+      passwordHash,
+      name: name ?? null,
+    },
+    include: { interests: true },
+  });
+
+  const token = await signAppToken(toPublicUser(user));
+  return { token, user: toPublicUser(user) };
+}
+
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new AuthError("invalid-token", "User not found");
+  }
+  if (!user.passwordHash) {
+    // OAuth-only account — no password to change.
+    throw new AuthError("invalid-token", "No password set for this account");
+  }
+
+  const matches = await argon2.verify(user.passwordHash, currentPassword);
+  if (!matches) {
+    throw new AuthError("invalid-token", "Current password is incorrect");
+  }
+
+  const passwordHash = await argon2.hash(newPassword);
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+}
+
+export async function loginWithEmail(
+  email: string,
+  password: string
+): Promise<AuthResult> {
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { interests: true },
+  });
+  if (!user || !user.passwordHash) {
+    throw new AuthError("invalid-token", "Invalid email or password");
+  }
+
+  const matches = await argon2.verify(user.passwordHash, password);
+  if (!matches) {
+    throw new AuthError("invalid-token", "Invalid email or password");
+  }
+
+  const token = await signAppToken(toPublicUser(user));
+  return { token, user: toPublicUser(user) };
 }

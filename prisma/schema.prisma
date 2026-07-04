@@ -14,19 +14,19 @@ datasource db {
   provider = "postgresql"
 }
 
-// -------------------- Core structure --------------------
 
 model Building {
   id          String  @id @default(cuid())
   code        String  @unique
   name        String
   description String?
+  imageUrl    String? 
 
-  // Geofence — set/maintained via raw SQL (PostGIS). `zone` is the polygon a
-  // user must enter to be considered "at" the building; `centroid` is used
-  // for distance ordering when they're nearby but not yet inside.
   zone     Unsupported("geometry(Polygon, 4326)")?
   centroid Unsupported("geometry(Point, 4326)")?
+
+  pinLat Float?
+  pinLng Float?
 
   floors                 Floor[]
   beacons                BleBeacon[]
@@ -37,6 +37,8 @@ model Building {
   mapNodes               MapNode[]
   pois                   Poi[]
   wifiAccessPoints       WifiAccessPoint[]
+  chatSessions           ChatSession[]
+  buildingVisits         BuildingVisit[]
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -77,17 +79,11 @@ model Floor {
   // app. Null for floors uploaded as raster images (those use mapUrl instead).
   vectorMap Json?
 
-  // Reverse relations
-  // Note: Some relations are defined on the other side, but we can add them here for convenience if needed.
-  // For now, we rely on the building-level relations + floorLevel filtering, 
-  // or we can add specific relations if Prisma requires them for strict integrity.
-  // The user's schema didn't explicitly link Beacons to Floor *model*, just via integer level.
-  // We will keep it flexible as per suggestion.
+
 
   @@unique([buildingId, level])
 }
 
-// -------------------- BLE beacons & models --------------------
 
 model BleBeacon {
   id        String @id @default(cuid())
@@ -132,10 +128,8 @@ model BleEnvModel {
   @@unique([buildingId, floorLevel])
 }
 
-// -------------------- Fingerprints --------------------
+//FINGERPRINTS
 
-/// One collection run for a building/floor. Groups every BleFingerprint
-/// and (transitively) every RawRssiReading captured during that run.
 model FingerprintSession {
   id              String           @id @default(cuid())
   building        Building         @relation(fields: [buildingId], references: [id])
@@ -174,10 +168,10 @@ model BleFingerprint {
   x          Float
   y          Float
 
-  beaconUids String[] // ordered list of beacon IDs
-  rssis      Int[] // same length as beaconUids, IQR-filtered median RSSI in dBm
+  beaconUids String[]
+  rssis      Int[] 
 
-  durationMs Int? // scan window length used to collect this sample
+  durationMs Int? 
 
   deviceModel String?
   layoutTag   String? // e.g. "layout1", "layout2"
@@ -288,9 +282,6 @@ model WifiReading {
   @@index([bssid])
 }
 
-/// The radio map: one row per (building, floor, gridX, gridY) with
-/// mean + stddev per beacon across every sample at that point. This is
-/// what live positioning matches against.
 model AggregatedFingerprint {
   id         String   @id @default(cuid())
   building   Building @relation(fields: [buildingId], references: [id])
@@ -335,7 +326,6 @@ model Measurement {
   @@index([buildingId, createdAt])
 }
 
-// -------------------- Indoor map & routing --------------------
 
 model MapNode {
   id String @id @default(cuid())
@@ -367,7 +357,7 @@ model MapEdge {
   toNode   MapNode @relation("EdgesTo", fields: [toNodeId], references: [id])
   toNodeId String
 
-  cost Float // distance, + floor-change penalty etc.
+  cost Float
 
   bidirectional Boolean @default(true)
 }
@@ -379,7 +369,6 @@ enum MapNodeType {
   ELEVATOR
 }
 
-// -------------------- POIs (rooms, etc.) --------------------
 
 model Poi {
   id String @id @default(cuid())
@@ -390,26 +379,38 @@ model Poi {
   floorLevel Int
 
   name String
-  code String? // room number (e.g. "C3-305") or store id (e.g. "351")
+  code String? 
   type PoiType
 
-  // Per-POI marker icon (compressed WebP, served from /uploads/pois). When set,
-  // the app/dashboard render this image instead of the default dot marker.
   iconUrl String?
 
   x Float
   y Float
 
-  // Catalog / chatbot metadata. Lets the navigation POI double as the store
-  // record the chatbot answers from, so both features share one source of truth.
-  description     String? // human-readable store description
-  category        String? // store cluster, e.g. "Computer Systems Hub"
-  aliases         String[] @default([]) // multilingual search aliases
-  productKeywords String[] @default([]) // product keywords that resolve to this POI
+ 
+  areaX Float?
+  areaY Float?
+  areaW Float?
+  areaH Float?
+
+
+  description     String? 
+  category        PoiCategory? @relation(fields: [categoryId], references: [id])
+  categoryId      String?
+  aliases         String[] @default([]) 
+  productKeywords String[] @default([]) 
+
+  avgRating   Float @default(0)
+  reviewCount Int   @default(0)
+  visitCount  Int   @default(0)
 
   active Boolean @default(true)
 
-  node MapNode[]
+  node           MapNode[]
+  visits         PoiVisit[]
+  reviews        PoiReview[]
+  deals          Deal[]
+  buildingVisits BuildingVisit[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -426,20 +427,101 @@ enum PoiType {
   OTHER
 }
 
-// -------------------- Auth --------------------
 
-/// A registered Navimind user. May be linked to multiple Identity rows
-/// (one per OAuth provider). Email is optional because Apple may relay a
-/// hidden "private relay" address that the user can revoke later.
-model User {
+model PoiCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  pois        Poi[]
+  users       User[]   @relation("UserInterests")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PoiVisit {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  poi        Poi      @relation(fields: [poiId], references: [id], onDelete: Cascade)
+  poiId      String
+  buildingId String
+  confirmed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, poiId])
+  @@index([userId, buildingId])
+}
+
+model PoiReview {
   id        String   @id @default(cuid())
-  email     String?  @unique
-  name      String?
-  avatarUrl String?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  poi       Poi      @relation(fields: [poiId], references: [id], onDelete: Cascade)
+  poiId     String
+  rating    Int
+  comment   String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  identities Identity[]
+  @@unique([userId, poiId])
+  @@index([poiId])
+}
+
+
+model Deal {
+  id          String    @id @default(cuid())
+  poi         Poi       @relation(fields: [poiId], references: [id], onDelete: Cascade)
+  poiId       String
+  title       String               
+  description String?              
+  imageUrl    String?            
+  discountPct Int?                  
+  validFrom   DateTime  @default(now())
+  validUntil  DateTime?           
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([poiId])
+  @@index([active, validUntil])
+}
+
+
+model BuildingVisit {
+  id         String    @id @default(cuid())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  building   Building  @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  buildingId String
+  // The shop (POI) the user chose to navigate to on this visit, if any.
+  poi        Poi?      @relation(fields: [poiId], references: [id], onDelete: SetNull)
+  poiId      String?
+  enteredAt  DateTime  @default(now())
+  leftAt     DateTime?
+
+  @@index([userId, enteredAt])
+  @@index([buildingId])
+}
+
+model User {
+  id                 String        @id @default(cuid())
+  email              String?       @unique
+  name               String?
+  avatarUrl          String?
+  passwordHash       String?
+  interests          PoiCategory[] @relation("UserInterests")
+  onboardingComplete Boolean       @default(false)
+  age                Int?
+  gender             String?       // "MALE" | "FEMALE" | "OTHER"
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  identities     Identity[]
+  chatSessions   ChatSession[]
+  poiVisits      PoiVisit[]
+  poiReviews     PoiReview[]
+  buildingVisits BuildingVisit[]
 }
 
 enum AuthProvider {
@@ -447,9 +529,7 @@ enum AuthProvider {
   APPLE
 }
 
-/// One row per (provider, user-on-that-provider) link. The (provider,
-/// providerUserId) pair is the unique sign-in key — `providerUserId` is
-/// the `sub` claim from Google/Apple ID tokens.
+
 model Identity {
   id             String       @id @default(cuid())
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -485,20 +565,12 @@ model TrajectorySession {
   startedAt    DateTime              @default(now())
   completedAt  DateTime?
 
-  // Environment versioning + capture conditions (B4). All nullable so the AI
-  // team can stratify the dataset by map/layout revision and by ambient state
-  // (a fingerprint collected in a crowded hall at rush hour decays differently
-  // from an empty one). Versions are free-running ints the collector bumps when
-  // the floor plan or beacon layout changes.
   buildingVersion     Int?
   beaconLayoutVersion Int?
   timeOfDay           String?   // MORNING | MIDDAY | EVENING | NIGHT (free text)
-  crowdLevel          String?   // EMPTY | LIGHT | MODERATE | CROWDED (free text)
+  crowdLevel          String?  
 
-  // Carry mode + device pose (B5) — body shadowing & stride dynamics depend on
-  // how the phone is held. Session-level defaults; recorder may also stamp the
-  // walk. phoneAttitude is a coarse descriptor (PORTRAIT/FLAT/...).
-  carryMode     String?   // HAND | SWING | POCKET | BACKPACK
+  carryMode     String?  
   phoneAttitude String?
 
   walks        TrajectoryWalk[]
@@ -555,14 +627,6 @@ model TrajectoryWalk {
   @@index([buildingId, floorLevel])
 }
 
-/// A stationary pause the collector marked mid-walk (Pause → Resume). A pause
-/// freezes ONLY the ground-truth position label: the server holds (x, y)
-/// constant across [pauseTMs, resumeTMs] by injecting two co-located anchors
-/// into the polyline, instead of linearly interpolating through the stop.
-/// IMPORTANT: every sensor stream keeps recording at full cadence during the
-/// pause — stationary IMU/BLE/mag/pressure data characterizes true-still noise
-/// and is kept, never dropped. `resumeTMs` is null only if the walk ended while
-/// still paused (the server then closes the interval at endedAt).
 model TrajectoryPauseEvent {
   id        String         @id @default(cuid())
   walk      TrajectoryWalk @relation(fields: [walkId], references: [id], onDelete: Cascade)
@@ -694,4 +758,31 @@ model TrajectoryWifiReading {
 
   @@index([walkId, capturedAt])
   @@index([walkId, bssid])
+}
+
+
+model ChatSession {
+  id         String                 @id @default(cuid())
+  userId     String?
+  user       User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  buildingId String
+  building   Building               @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  title      String
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  messages   ChatPersistedMessage[]
+
+  @@index([userId, buildingId])
+}
+
+model ChatPersistedMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender    String      // "USER" | "ASSISTANT"
+  text      String
+  action    Json?       // type, poiId, floorLevel etc.
+  createdAt DateTime    @default(now())
+
+  @@index([sessionId])
 }

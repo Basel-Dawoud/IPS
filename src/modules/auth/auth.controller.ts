@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { appleSignInSchema, googleSignInSchema } from "./auth.schema";
+import { appleSignInSchema, googleSignInSchema, registerSchema, loginSchema, changePasswordSchema } from "./auth.schema";
 import * as authService from "./auth.service";
 import { AuthError } from "./auth.service";
 import {
@@ -48,4 +48,38 @@ export const me = async (req: Request, res: Response) => {
   const user = await authService.getUserById(req.user.id);
   if (!user) return sendNotFound(res, "User");
   return sendSuccess(res, user);
+};
+
+export const register = async (req: Request, res: Response) => {
+  try {
+    const { email, password, name } = registerSchema.parse(req.body);
+    const result = await authService.signUpWithEmail(email, password, name);
+    return sendSuccess(res, result);
+  } catch (err: any) {
+    if (err?.name === "ZodError") return sendValidationError(res, err.errors);
+    return handleAuthError(res, err);
+  }
+};
+
+export const login = async (req: Request, res: Response) => {
+  try {
+    const { email, password } = loginSchema.parse(req.body);
+    const result = await authService.loginWithEmail(email, password);
+    return sendSuccess(res, result);
+  } catch (err: any) {
+    if (err?.name === "ZodError") return sendValidationError(res, err.errors);
+    return handleAuthError(res, err);
+  }
+};
+
+export const changePassword = async (req: Request, res: Response) => {
+  if (!req.user) return sendError(res, "Unauthenticated", 401);
+  try {
+    const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
+    await authService.changePassword(req.user.id, currentPassword, newPassword);
+    return sendSuccess(res, { success: true });
+  } catch (err: any) {
+    if (err?.name === "ZodError") return sendValidationError(res, err.errors);
+    return handleAuthError(res, err);
+  }
 };

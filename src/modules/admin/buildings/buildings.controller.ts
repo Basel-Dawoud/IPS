@@ -1,5 +1,8 @@
 import { Request, Response } from "express";
+import path from "path";
+import sharp from "sharp";
 import * as buildingService from "./buildings.service";
+import { BUILDINGS_UPLOAD_DIR, publicUrlForBuildingImage } from "../../../lib/upload";
 import {
   createBuildingSchema,
   setBuildingZoneSchema,
@@ -12,6 +15,7 @@ import {
   sendNotFound,
   sendValidationError,
   sendServerError,
+  sendBadRequest,
 } from "../../../utils/response";
 
 export const createBuilding = async (req: Request, res: Response) => {
@@ -103,5 +107,34 @@ export const clearBuildingZone = async (req: Request, res: Response) => {
     return sendNoContent(res);
   } catch (error) {
     return sendServerError(res, "Failed to clear building zone");
+  }
+};
+
+export const uploadBuildingImage = async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return sendBadRequest(res, "No file uploaded (use multipart field 'image')");
+    }
+    const { id } = req.params;
+
+    const existing = await buildingService.getBuildingById(id);
+    if (!existing) {
+      return sendNotFound(res, "Building");
+    }
+
+    // Process building image: resize to 800x600 webp
+    const filename = `${id}-${Date.now()}.webp`;
+    await sharp(req.file.buffer)
+      .resize(800, 600, { fit: "cover", withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toFile(path.join(BUILDINGS_UPLOAD_DIR, filename));
+
+    const imageUrl = publicUrlForBuildingImage(filename);
+    const building = await buildingService.updateBuilding(id, { imageUrl });
+
+    return sendSuccess(res, building, 200, "Building image uploaded");
+  } catch (error) {
+    console.error("[admin/buildings/image] failed:", error);
+    return sendServerError(res, "Failed to process building image");
   }
 };

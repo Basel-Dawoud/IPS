@@ -60,6 +60,64 @@ export function publicUrlForPoiIcon(filename: string): string {
   return `${publicBase()}/uploads/pois/${filename}`;
 }
 
+// --- Deal banner images -----------------------------------------------------
+// Stored under backend/uploads/deals and served at /uploads/deals. Processed
+// in memory (sharp) into a web-friendly WebP banner before saving.
+export const DEALS_UPLOAD_DIR = path.join(UPLOADS_ROOT, "deals");
+fs.mkdirSync(DEALS_UPLOAD_DIR, { recursive: true });
+
+export const dealImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error("Only PNG, JPEG or WebP images are allowed"));
+  },
+});
+
+/** Absolute, loadable URL for a stored deal banner filename. */
+export function publicUrlForDealImage(filename: string): string {
+  return `${publicBase()}/uploads/deals/${filename}`;
+}
+
+// --- Building images --------------------------------------------------------
+export const BUILDINGS_UPLOAD_DIR = path.join(UPLOADS_ROOT, "buildings");
+fs.mkdirSync(BUILDINGS_UPLOAD_DIR, { recursive: true });
+
+export const buildingImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error("Only PNG, JPEG or WebP images are allowed"));
+  },
+});
+
+/** Absolute, loadable URL for a stored building image filename. */
+export function publicUrlForBuildingImage(filename: string): string {
+  return `${publicBase()}/uploads/buildings/${filename}`;
+}
+
+// --- User avatars -----------------------------------------------------------
+// Stored under backend/uploads/avatars and served at /uploads/avatars.
+// Processed in memory (sharp) into a small square WebP before saving.
+export const AVATARS_UPLOAD_DIR = path.join(UPLOADS_ROOT, "avatars");
+fs.mkdirSync(AVATARS_UPLOAD_DIR, { recursive: true });
+
+export const avatarImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error("Only PNG, JPEG or WebP images are allowed"));
+  },
+});
+
+/** Absolute, loadable URL for a stored avatar filename. */
+export function publicUrlForAvatar(filename: string): string {
+  return `${publicBase()}/uploads/avatars/${filename}`;
+}
+
 function publicBase(): string {
   return (
     process.env.PUBLIC_BASE_URL?.replace(/\/$/, "") ||

@@ -1,22 +1,36 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import path from "path";
+import { createServer } from "http";
+import { Server as SocketServer } from "socket.io";
 import { UPLOADS_ROOT } from "./lib/upload";
-
-dotenv.config();
+import { initChatSocket } from "./modules/client/chat/chat.socket";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const httpServer = createServer(app);
+const io = new SocketServer(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // Serve uploaded floor plan images (backend/uploads → /uploads/...).
 app.use("/uploads", express.static(UPLOADS_ROOT));
-+app.get("/", (req, res) => {
+app.get("/", (req, res) => {
   res.send("Indoor Positioning System API");
 });
+
+// Initialize Socket.IO chatbot
+initChatSocket(io);
 
 import adminBuildingRoutes from "./modules/admin/buildings/buildings.routes";
 import clientBuildingRoutes from "./modules/client/buildings/buildings.routes";
@@ -32,6 +46,13 @@ import adminFingerprintingRoutes from "./modules/admin/fingerprinting/fingerprin
 import adminTrajectoryRoutes from "./modules/admin/trajectory/trajectory.routes";
 import adminWifiApRoutes from "./modules/admin/wifi-aps/wifi-aps.routes";
 import authRoutes from "./modules/auth/auth.routes";
+import clientChatSessionRoutes from "./modules/client/chat/chat-session.routes";
+import clientRecommendationRoutes from "./modules/client/recommendation/recommendation.routes";
+import clientUserRoutes from "./modules/client/user/user.routes";
+import adminDealRoutes from "./modules/admin/deals/deals.routes";
+import clientDealRoutes from "./modules/client/deals/deals.routes";
+import clientVisitRoutes from "./modules/client/visits/visits.routes";
+import clientSearchRoutes from "./modules/client/search/search.routes";
 import { optionalAuth } from "./middleware/optional-auth";
 
 app.use(optionalAuth);
@@ -47,9 +68,16 @@ app.use("/api/admin/map", adminMapRoutes);
 app.use("/api/admin/pois", adminPoiRoutes);
 app.use("/api/client/pois", clientPoiRoutes);
 app.use("/api/client/navigation", clientNavigationRoutes);
+app.use("/api/client/chat/sessions", clientChatSessionRoutes);
+app.use("/api/client/recommendations", clientRecommendationRoutes);
+app.use("/api/client/user", clientUserRoutes);
 app.use("/api/admin/fingerprinting", adminFingerprintingRoutes);
 app.use("/api/admin/trajectory", adminTrajectoryRoutes);
 app.use("/api/admin/wifi-aps", adminWifiApRoutes);
+app.use("/api/admin/deals", adminDealRoutes);
+app.use("/api/client/deals", clientDealRoutes);
+app.use("/api/client/visits", clientVisitRoutes);
+app.use("/api/client/search", clientSearchRoutes);
 
 app.use(
   (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -61,8 +89,8 @@ app.use(
   },
 );
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT} (with Socket.IO enabled)`);
 });
 
 export default app;

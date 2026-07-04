@@ -3,6 +3,11 @@ export interface PublicUser {
   email: string | null;
   name: string | null;
   avatarUrl: string | null;
+  interests?: string[];
+  onboardingComplete: boolean;
+  age: number | null;
+  gender: string | null;
+  hasPassword: boolean;
 }
 
 export interface AuthResult {
