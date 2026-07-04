@@ -45,8 +45,13 @@ services:
       # Optional shared secret; only needed if this service is ever exposed on a
       # public URL. Leave unset for the private-network deployment.
       CHATBOT_SERVICE_TOKEN: "${CHATBOT_SERVICE_TOKEN:-}"
-    ports:
-      - "8020:8000"
+    # Use `expose:` (Docker-network-only), NOT `ports:` (host binding). Coolify
+    # routes the domain to this port via Traefik; publishing a host port with
+    # `ports:` can make Coolify skip attaching the service to the proxy network,
+    # which surfaces as Traefik "503 no available server". The container listens
+    # on 8000, and the Coolify domain is set to ...:8000 to match.
+    expose:
+      - "8000"
     mem_limit: 2g
 
 volumes:

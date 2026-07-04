@@ -77,10 +77,15 @@ class Http:
         self.name = f"http {self.base}"
 
     def _post(self, path, payload):
+        import os
         data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        token = os.environ.get("CHATBOT_SERVICE_TOKEN")
+        if token:
+            headers["X-Chatbot-Token"] = token
         req = urllib.request.Request(
             f"{self.base}{path}", data=data,
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers=headers, method="POST",
         )
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -92,7 +97,13 @@ class Http:
         })
 
     def health(self):
-        with urllib.request.urlopen(f"{self.base}/health", timeout=10) as r:
+        import os
+        headers = {}
+        token = os.environ.get("CHATBOT_SERVICE_TOKEN")
+        if token:
+            headers["X-Chatbot-Token"] = token
+        req = urllib.request.Request(f"{self.base}/health", headers=headers, timeout=10)
+        with urllib.request.urlopen(req) as r:
             return json.loads(r.read().decode("utf-8"))
 
 
