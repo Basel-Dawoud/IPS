@@ -52,9 +52,17 @@ export async function callChatbotService(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const token = process.env.CHATBOT_SERVICE_TOKEN;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers["X-Chatbot-Token"] = token;
+    }
+
     const response = await fetch(`${serviceUrl}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         message: input.message,
         buildingId: input.buildingId,
