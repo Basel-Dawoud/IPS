@@ -1,0 +1,53 @@
+# Deploy this as ONE Coolify "Docker Compose" resource (Base Directory =
+# chatbot-service, Compose file = docker-compose.yml). It bundles Ollama + the
+# chatbot brain in a single stack: Coolify puts both on one private network, so
+# chatbot-service reaches Ollama by service name (http://ollama:11434) with no
+# extra networking config. The model persists in the ollama_data volume across
+# redeploys.
+#
+# NOTE for Coolify: memory limits use the service-level `mem_limit:` key, NOT
+# `deploy.resources.limits` — the latter is Swarm-only and is silently ignored
+# by Coolify's `docker compose up` execution.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    # Start the server, then pull the model into the same instance. `ollama
+    # pull` is idempotent (skips the download once the volume already has the
+    # model), so only the very first boot is slow.
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 5 &&
+       ollama pull ${CHATBOT_LLM_MODEL:-qwen2.5:3b} &&
+       wait"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q ${CHATBOT_LLM_MODEL:-qwen2.5:3b}"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s  # first pull of ~2GB needs headroom
+      retries: 5
+    mem_limit: 4g
+
+  chatbot-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_URL: "http://ollama:11434"
+      CHATBOT_LLM_MODEL: "${CHATBOT_LLM_MODEL:-qwen2.5:3b}"
+      OLLAMA_TIMEOUT_S: "${OLLAMA_TIMEOUT_S:-60}"
+      # Optional shared secret; only needed if this service is ever exposed on a
+      # public URL. Leave unset for the private-network deployment.
+      CHATBOT_SERVICE_TOKEN: "${CHATBOT_SERVICE_TOKEN:-}"
+    ports:
+      - "8000:8000"
+    mem_limit: 2g
+
+volumes:
+  ollama_data:
