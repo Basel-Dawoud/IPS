@@ -28,6 +28,11 @@ model Building {
   pinLat Float?
   pinLng Float?
 
+  // Compass bearing (deg, 0-360) that the floor map's "up" (-y) direction
+  // points toward in the real world. Calibrated on-site; drives the user
+  // direction cone on the app's Navigate map.
+  northOffsetDeg Float?
+
   floors                 Floor[]
   beacons                BleBeacon[]
   envModels              BleEnvModel[]

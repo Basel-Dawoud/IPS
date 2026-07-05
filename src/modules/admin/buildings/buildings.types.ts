@@ -6,6 +6,8 @@ export interface CreateBuildingInput {
   /** Explicit map pin (outdoor map marker + directions target). */
   pinLat?: number | null;
   pinLng?: number | null;
+  /** Compass bearing of the floor map's "up" direction (deg from true north). */
+  northOffsetDeg?: number | null;
 }
 
 export interface UpdateBuildingInput {
@@ -15,4 +17,5 @@ export interface UpdateBuildingInput {
   imageUrl?: string | null;
   pinLat?: number | null;
   pinLng?: number | null;
+  northOffsetDeg?: number | null;
 }

@@ -8,6 +8,8 @@ export const createBuildingSchema = z.object({
   // Explicit map pin (outdoor map marker + directions target).
   pinLat: z.number().min(-90).max(90).nullable().optional(),
   pinLng: z.number().min(-180).max(180).nullable().optional(),
+  // Compass bearing of the floor map's "up" direction (deg from true north).
+  northOffsetDeg: z.number().min(0).max(360).nullable().optional(),
 });
 
 export const updateBuildingSchema = z.object({
@@ -17,6 +19,7 @@ export const updateBuildingSchema = z.object({
   imageUrl: z.string().url().optional().nullable(),
   pinLat: z.number().min(-90).max(90).nullable().optional(),
   pinLng: z.number().min(-180).max(180).nullable().optional(),
+  northOffsetDeg: z.number().min(0).max(360).nullable().optional(),
 });
 
 // Accepts a GeoJSON Polygon. We validate the outer shape; PostGIS does the
