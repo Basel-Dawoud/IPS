@@ -10,6 +10,12 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the RAG embedder at build time and bake it into this layer, so
+# the running container never needs network access to Hugging Face (that was
+# costing ~15-20s on the first /chat after every restart/redeploy, plus risked
+# HF's unauthenticated rate limit). Must match EMBED_MODEL_NAME in catalog.py.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+
 COPY . .
 
 # The Qwen model is served by a separate Ollama container (see

@@ -53,6 +53,12 @@ services:
     expose:
       - "8000"
     mem_limit: 2g
+    # This service sits on two Docker networks (its own private one, shared with
+    # ollama, plus Coolify's `coolify` proxy network). Without telling Traefik
+    # which one to route through, it can pick the wrong one and lose the
+    # container entirely -> "503 no available server". Pin it explicitly.
+    labels:
+      - "traefik.docker.network=coolify"
 
 volumes:
   ollama_data:

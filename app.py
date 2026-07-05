@@ -12,13 +12,21 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 import llm
-from catalog import get_catalog
+from catalog import get_catalog, get_embedder
 from brain import respond
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chatbot_service")
 
 app = FastAPI(title="Navimind Chatbot Service")
+
+
+@app.on_event("startup")
+def _preload_embedder():
+    # Load the RAG embedder now, at container startup, so the first real
+    # /chat request never pays for it (the model is baked into the image at
+    # build time, so this is just moving weights into memory - no network).
+    get_embedder()
 
 # Optional shared-secret auth. Unset (the default for local/internal-network
 # deployments) means no auth is enforced — this only matters if the service
