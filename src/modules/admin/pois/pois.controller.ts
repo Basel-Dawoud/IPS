@@ -35,7 +35,9 @@ export const getPois = async (req: Request, res: Response) => {
     }
     const floorLevelRaw = req.query.floorLevel as string | undefined;
     const floorLevel =
-      floorLevelRaw !== undefined && floorLevelRaw !== "" ? Number(floorLevelRaw) : undefined;
+      floorLevelRaw !== undefined && floorLevelRaw !== ""
+        ? Number(floorLevelRaw)
+        : undefined;
     if (floorLevel !== undefined && Number.isNaN(floorLevel)) {
       return sendBadRequest(res, "floorLevel must be a number");
     }
@@ -88,11 +90,10 @@ export const uploadPoiIcon = async (req: Request, res: Response) => {
       return sendNotFound(res, "POI");
     }
 
-    // Compress + resize into a small square-ish WebP marker.
     const filename = `${id}-${Date.now()}.webp`;
     await sharp(req.file.buffer)
-      .resize(128, 128, { fit: "inside", withoutEnlargement: true })
-      .webp({ quality: 80 })
+      .resize(512, 512, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 90 })
       .toFile(path.join(POIS_UPLOAD_DIR, filename));
 
     const poi = await poiService.setPoiIcon(id, publicUrlForPoiIcon(filename));
