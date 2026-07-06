@@ -3,6 +3,12 @@
 # Python 3.11 is a stable and widely supported version.
 FROM python:3.11-slim
 
+# Python block-buffers stdout when it isn't attached to a TTY — which is
+# always the case in a container. Without this, log output can sit in a
+# buffer and lag behind (or be lost entirely right before a crash) instead
+# of showing up in `docker logs` immediately.
+ENV PYTHONUNBUFFERED=1
+
 # Set the working directory inside the container.
 # All subsequent commands will be executed from /app.
 WORKDIR /app

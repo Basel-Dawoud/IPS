@@ -1,127 +1,170 @@
-# Dashboard — MQTT Rules v1.1
+# Dashboard — MQTT Rules v1.2
 # IPS Project · Web Dashboard Developer Guide
 
-This document tells you everything you need to connect the web dashboard to the
-IPS system via MQTT and the FastAPI REST layer.
-For the full engineering spec, see `MQTT_CONTRACT.md`.
+This document tells you everything you need to connect the web dashboard to
+the IPS system. For the full engineering spec, see `MQTT_CONTRACT.md`.
+
+**v1.2 change:** this doc previously described connecting the dashboard
+directly to the MQTT broker over WebSocket (port `9001`). That approach was
+tried and deliberately abandoned — see the comment on the `mosquitto`
+service in `docker-compose.yml`. The dashboard has never actually done this;
+it reads everything through FastAPI. This revision replaces that guidance
+with what's really there, instead of leaving a developer to implement
+against a plan the project moved away from.
 
 ---
 
 ## Two Data Sources — Use the Right One
 
-The dashboard reads from two sources depending on what it needs:
-
 | Query | Source | Why |
 |---|---|---|
-| Where is everyone right now? | **MQTT / Redis** (via FastAPI) | Sub-second updates, always current |
-| Show me the heatmap for today | **PostgreSQL REST API** | Historical range query — latency is acceptable |
-| Device last seen / battery | **MQTT / Redis** (via FastAPI) | Retained last-known state |
-| Navigation history for a device | **PostgreSQL REST API** | Persistent record |
-| Floor occupancy count | **PostgreSQL REST API** | `crowd_analytics` continuous aggregate |
+| Where is everyone right now? | **`WS /ws/live`** (FastAPI, Redis-backed) | Sub-second, event-driven pushes, always current |
+| Is a room currently crowded? | **`WS /ws/live`** (`"alert"` messages) + **`GET /alerts/active`** | Same live pipeline; REST version for a point-in-time read |
+| Show me the heatmap for today | **`GET /analytics/heatmap`** | Historical range query — latency is acceptable |
+| Device last seen / battery | **`GET /live/status/{device_id}`** or `/ws/live` | Redis, TTL-expired automatically if the device goes stale |
+| Navigation history for a device | **`GET /history/device/{device_id}`** | Persistent record, TimescaleDB |
+| Floor occupancy over time | **`GET /analytics/floor/{floor}`** | `crowd_analytics` continuous aggregate |
+| Most-visited rooms | **`GET /analytics/rooms`** | `room_visits` continuous aggregate |
+
+There is no direct broker connection anywhere in this list, and there
+shouldn't be — the reasons are below.
 
 ---
 
-## Option A — Subscribe to MQTT Directly (WebSocket)
+## Why FastAPI, Not the Broker Directly
 
-The dashboard can subscribe to the broker directly over WebSocket.
-Mosquitto supports WebSocket on port `9001` (requires config update).
+The dashboard is a browser tab, not an MQTT device — it doesn't have a
+`device_id`, and it needs three things MQTT alone doesn't give it:
+
+1. **A snapshot on connect.** A newly-opened dashboard needs "who's here
+   right now," not just messages published after it happened to subscribe.
+   `/ws/live` gets this from Redis (a real point-in-time query) the instant
+   it connects. MQTT retained messages can approximate this, but only if
+   every device reliably clears its retained message on disconnect — real
+   phones don't disconnect cleanly, so this becomes a "ghost device" trap
+   without a lot of extra Last-Will-and-Testament plumbing.
+2. **One validated gatekeeper.** FastAPI drops malformed payloads before
+   they reach a browser. A direct broker connection means every dashboard
+   tab gets raw, unvalidated firehose access.
+3. **A single point to measure from.** Every "msgs/sec" or "devices online"
+   number the dashboard shows exists because exactly one process is
+   counting. Multiple independent broker subscribers would each need their
+   own counting logic.
+
+---
+
+## `WS /ws/live` — the live channel
+
+Connect once per dashboard session:
 
 ```javascript
-// JavaScript / MQTT.js
-import mqtt from 'mqtt';
+const ws = new WebSocket(`ws://${location.hostname}:8000/ws/live`);
 
-const client = mqtt.connect('ws://localhost:9001');
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
 
-client.on('connect', () => {
-  // All devices in building1
-  client.subscribe('ips/building1/device/+/position');
-  client.subscribe('ips/building1/device/+/status');
+  switch (msg.type) {
+    case 'snapshot':
+      // Sent once, immediately on connect.
+      msg.items.forEach(item => upsertDeviceMarker(item));
+      msg.active_alerts.forEach(alert => showAlert(alert)); // already-active alerts, not just new ones
+      break;
 
-  // Zone crowd density
-  client.subscribe('ips/building1/zone/+/crowd');
+    case 'position':
+      upsertDeviceMarker(msg); // msg itself is the position payload, plus "type"
+      break;
 
-  // Full floor snapshot
-  client.subscribe('ips/building1/live/snapshot');
-});
+    case 'status':
+      updateDeviceStatus(msg.device_id, msg.battery, msg.state);
+      break;
 
-client.on('message', (topic, message) => {
-  const data = JSON.parse(message.toString());
-
-  if (topic.endsWith('/position')) {
-    updateDeviceMarker(data.device_id, data.x, data.y, data.floor);
+    case 'alert':
+      if (msg.level === 'warning') showAlert(msg);
+      else clearAlert(msg.room_id); // msg.level === 'clear'
+      break;
   }
-  if (topic.endsWith('/status')) {
-    updateDeviceStatus(data.device_id, data.state, data.battery);
-  }
-  if (topic.includes('/zone/') && topic.endsWith('/crowd')) {
-    updateCrowdIndicator(data);
-  }
-});
+};
 ```
 
-To enable WebSocket on Mosquitto, add to `mosquitto.conf`:
-```
-listener 9001
-protocol websockets
+No polling, no reconnect-and-miss-messages window for position/status —
+each arrives the instant `server/main.py` receives it from MQTT. Alerts are
+the one thing computed on a short interval (`CROWD_ALERT_CHECK_INTERVAL_SECONDS`,
+default 3s) rather than per-message, since checking room occupancy on every
+single position update would scale with MQTT message rate for no benefit —
+see the comment above `crowd_alert_loop()` in `server/main.py`.
+
+### `alert` message shape
+
+```json
+{
+  "type":        "alert",
+  "level":       "warning",
+  "room_id":     "358",
+  "room_name":   "Health & Personal Care",
+  "floor":       3,
+  "building_id": "building1",
+  "count":       8,
+  "threshold":   8,
+  "ts":          1710000000
+}
 ```
 
-And expose port `9001` in `docker-compose.yml`:
-```yaml
-mosquitto:
-  ports:
-    - "1883:1883"
-    - "9001:9001"
-```
+`level` is `"warning"` on the moment a room crosses the threshold, or
+`"clear"` on the moment it recovers — each fires exactly once per episode,
+not on every check while still over/under threshold. This is a dashboard-only
+message shape; it isn't published to MQTT. The MQTT-facing alert (which goes
+to the affected phones, not the dashboard) has a different, simpler shape —
+see `MQTT_CONTRACT.md`.
 
 ---
 
-## Option B — Poll FastAPI REST Endpoints (HTTP)
-
-Use this when you want historical data, aggregations, or server-filtered results.
-These endpoints are planned for the next phase — not yet implemented.
+## REST Endpoints
 
 | Endpoint | Returns | Source |
 |---|---|---|
-| `GET /devices/live` | All devices, latest position | Redis |
-| `GET /devices/{id}/history?from=&to=` | Position history for one device | TimescaleDB |
-| `GET /analytics/heatmap?floor=&from=&to=` | Heatmap grid data | `crowd_analytics` |
-| `GET /analytics/floor/{floor}` | Occupancy count per 5-min bucket | `crowd_analytics` |
-| `GET /health` | Server status | FastAPI |
+| `GET /health` | MQTT/Redis/Postgres connectivity | Live |
+| `GET /floors` | Floor dimensions, image path, room directory, `meters_per_cell` | `server/floors.json` |
+| `GET /rooms?floor=` | Room id/name/bounding box | `server/floors.json` |
+| `GET /live/positions` | Every active device's current position | Redis (same data as the WS snapshot) |
+| `GET /live/status/{device_id}` | Latest heartbeat for one device | Redis |
+| `GET /alerts/active` | Currently-crowded rooms | In-memory (same data as WS `"alert"` state) |
+| `GET /history/device/{device_id}?limit=` | Raw position history, most recent first | TimescaleDB |
+| `GET /analytics/floor/{floor}?minutes=` | 5-min-bucketed occupancy time series | `crowd_analytics` |
+| `GET /analytics/rooms?floor=&minutes=&limit=` | Per-room visit counts, ranked | `room_visits` |
+| `GET /analytics/heatmap?floor=&minutes=` | Per-room intensity, normalized 0–1 | `room_visits` |
 
----
-
-## Topics You Subscribe To
-
-| Topic | QoS | What arrives | Update frequency |
-|---|:---:|---|---|
-| `ips/<building_id>/device/+/position` | 0 | x, y, floor, zone per device | Every 2 seconds per device |
-| `ips/<building_id>/device/+/status`   | 1 | battery, state, last_seen | Every 30 seconds per device |
-| `ips/<building_id>/zone/+/crowd`      | 0 | device_count per zone | On crowd change |
-| `ips/<building_id>/live/snapshot`     | 0 | Full floor state JSON | On any position change |
-| `ips/<building_id>/system/health`     | 1 | Backend health status | Every 60 seconds |
+Poll the `/analytics/*` endpoints for historical views. Never poll
+`/live/positions` on a timer for the live map — that's what `/ws/live` is
+for; polling it would just be a slower, less efficient version of a
+connection you should already have open.
 
 ---
 
 ## Topics You Never Publish To
 
-The dashboard is **read-only** on MQTT. Never publish to:
+The dashboard talks to FastAPI, never to the broker, so this is more of a
+"why would you" than a rule — but for clarity, these topics exist and none
+of them are the dashboard's to touch:
+
 ```
-ips/+/device/+/position   ← mobile app only
-ips/+/device/+/status     ← mobile app only
+ips/+/device/+/position   ← mobile app / simulator only
+ips/+/device/+/status     ← mobile app / simulator only
 ips/+/device/+/command    ← backend only
 ips/+/device/+/alert      ← backend only
 ```
 
 ---
 
-## Position Payload Reference
+## Position Item Shape (inside `snapshot.items[]` and standalone `"position"` messages)
 
 ```json
 {
+  "type":        "position",
   "device_id":   "user-a3f9b2c1",
   "building_id": "building1",
-  "floor":       2,
-  "zone_id":     "north_corridor",
+  "floor":       3,
+  "zone_id":     "floor-3-open",
+  "room_id":     "358",
   "x":           10.5,
   "y":           7.2,
   "accuracy":    1.8,
@@ -130,21 +173,21 @@ ips/+/device/+/alert      ← backend only
 }
 ```
 
-Render `accuracy` as a circle radius around the dot on the map.
-`ts` is seconds — multiply by 1000 for JavaScript `Date` objects.
+`room_id` is nullable — a device in the corridor between rooms won't have
+one. `ts` is seconds; multiply by 1000 for a JavaScript `Date`.
 
 ---
 
 ## Recommended Dashboard Architecture
 
 ```
-WebSocket (MQTT)          REST (FastAPI)
-      │                        │
-      ├─ live device dots       ├─ heatmap overlay
-      ├─ device status badges   ├─ history timeline
-      ├─ zone crowd colours     ├─ analytics charts
-      └─ system health bar      └─ device detail panel
+WS /ws/live (FastAPI)          REST (FastAPI)
+      │                              │
+      ├─ live device dots           ├─ heatmap overlay
+      ├─ device status badges       ├─ history timeline
+      ├─ active alert banner/pulse  ├─ analytics charts
+      └─ system health bar          └─ device detail panel
 ```
 
-Keep live rendering (MQTT) and analytical views (REST) completely separate.
-Do not poll REST for live data — use MQTT retain for that.
+Both columns go through FastAPI. There is no MQTT-direct column — that's
+the whole point of this revision.

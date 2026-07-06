@@ -299,6 +299,22 @@
   .room-rank-bar-track{ grid-column: 1 / -1; height: 4px; background: var(--panel-edge); border-radius: 2px; overflow: hidden; margin-bottom: 2px; }
   .room-rank-bar-fill{ height: 100%; background: var(--zone-2); border-radius: 2px; }
   .room-rank-count{ font-family: var(--font-mono); color: var(--zone-2); font-size: 11px; }
+
+  .alert-row{
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 10px; margin-bottom: 6px;
+    border: 1px solid var(--danger); border-radius: 4px;
+    background: rgba(226, 87, 76, 0.08);
+  }
+  .alert-row .alert-title{
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    color: var(--danger); display: flex; align-items: center; gap: 6px;
+  }
+  .alert-row .alert-dot{
+    width: 6px; height: 6px; border-radius: 50%; background: var(--danger);
+    animation: pulse 1.4s infinite;
+  }
+  .alert-row .alert-detail{ font-size: 11px; color: var(--text-dim); }
   .calib-readout{ font-family: var(--font-mono); font-size: 11px; color: var(--zone-2); margin-top: 8px; min-height: 16px; }
 
   a.analytics-link{ color: var(--signal); text-decoration: none; font-family: var(--font-mono); font-size: 11px; }
@@ -354,6 +370,13 @@
           <div class="stat-cell"><div class="k">Average · 24h</div><div class="v" id="occAvg">—</div></div>
           <div class="stat-cell"><div class="k">Unique · session</div><div class="v" id="occUnique">0</div></div>
           <div class="stat-cell"><div class="k">Devices online</div><div class="v ok" id="statOnline">0</div></div>
+        </div>
+      </div>
+
+      <div class="panel-section" id="alertsSection">
+        <div class="panel-label"><span>Active alerts</span></div>
+        <div id="alertsList">
+          <div class="occupancy-chart-empty">No active alerts.</div>
         </div>
       </div>
 
@@ -471,6 +494,7 @@ let selectedDeviceId = null;
 let heatmapEnabled = false;
 let heatmapData = {};        // room_id -> intensity (0..1), refreshed on each analytics poll
 let heatmapHasData = false;
+let activeAlerts = {};       // room_id -> latest alert record, present only while that room is alerting
 
 const devicesByFloor = {};   // floor -> Map(device_id -> {prev, target, trail, ...})
 const statusByDevice = {};   // device_id -> latest status payload
@@ -647,12 +671,21 @@ function connectWebSocket(){
 
     if (msg.type === 'snapshot') {
       msg.items.forEach(item => upsertPosition(item));
+      (msg.active_alerts || []).forEach(a => { activeAlerts[a.room_id] = a; });
+      renderAlerts();
     } else if (msg.type === 'position') {
       positionMsgTimestamps.push(now);
       upsertPosition(msg);
     } else if (msg.type === 'status') {
       statusByDevice[msg.device_id] = msg;
       if (msg.device_id === selectedDeviceId) updateSelectedPanel();
+    } else if (msg.type === 'alert') {
+      if (msg.level === 'warning') {
+        activeAlerts[msg.room_id] = msg;
+      } else {
+        delete activeAlerts[msg.room_id];
+      }
+      renderAlerts();
     }
 
     updateCounts();
@@ -1044,6 +1077,7 @@ function renderFrame(){
   const dims = floorsConfig[activeFloor];
   ctx.clearRect(0, 0, dims.cols, dims.rows);
   if (heatmapEnabled) drawHeatmap();
+  drawAlertPulses();
   drawDevices();
   drawScaleBar();
   drawCompass();
@@ -1210,6 +1244,45 @@ function renderMostVisited(items){
         </div>
       </div>`;
   }).join('');
+}
+
+function renderAlerts(){
+  const el = document.getElementById('alertsList');
+  const alerts = Object.values(activeAlerts);
+  if (!alerts.length) {
+    el.innerHTML = '<div class="occupancy-chart-empty">No active alerts.</div>';
+    return;
+  }
+  el.innerHTML = alerts.map(a => `
+    <div class="alert-row">
+      <div class="alert-title"><span class="alert-dot"></span>${a.room_name || a.room_id} · Level 0${a.floor}</div>
+      <div class="alert-detail">${a.count} people present · threshold ${a.threshold}</div>
+    </div>`).join('');
+}
+
+function drawAlertPulses(){
+  const dims = floorsConfig[activeFloor];
+  const rooms = dims.rooms || [];
+  if (!rooms.length || !Object.keys(activeAlerts).length) return;
+
+  const now = Date.now();
+  const pulse = 0.5 + 0.5 * Math.sin(now / 350); // faster than the device breathing pulse — reads as more urgent
+
+  Object.values(activeAlerts).forEach(a => {
+    if (String(a.floor) !== String(activeFloor)) return; // alert panel-list still shows it; canvas only draws the active floor
+    const room = rooms.find(r => r.id === a.room_id);
+    if (!room) return;
+
+    const w = room.col_end - room.col_start;
+    const h = room.row_end - room.row_start;
+
+    ctx.fillStyle = `rgba(226, 87, 76, ${(0.10 + pulse * 0.08).toFixed(2)})`;
+    ctx.fillRect(room.col_start, room.row_start, w, h);
+
+    ctx.strokeStyle = `rgba(226, 87, 76, ${(0.5 + pulse * 0.5).toFixed(2)})`;
+    ctx.lineWidth = dims.rows * (0.006 + pulse * 0.004);
+    ctx.strokeRect(room.col_start, room.row_start, w, h);
+  });
 }
 
 function drawHeatmap(){

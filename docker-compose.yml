@@ -59,6 +59,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ipspass}
       POSTGRES_DB: ${POSTGRES_DB:-ipsdb}
       POSTGRES_PORT: 5432
+      CROWD_ALERT_THRESHOLD: ${CROWD_ALERT_THRESHOLD:-8}
+      CROWD_ALERT_CHECK_INTERVAL_SECONDS: ${CROWD_ALERT_CHECK_INTERVAL_SECONDS:-3}
+    healthcheck:
+      # Same idea as postgres's healthcheck above: use the stdlib only (no
+      # curl in the slim base image) so this doesn't need an extra apt-get
+      # layer just to check a socket.
+      test: ["CMD", "python", "-c", "import urllib.request as r; r.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     ports:
       - "8000:8000"
     depends_on:

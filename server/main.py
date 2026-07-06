@@ -2,23 +2,27 @@
 # IPS backend server.
 #
 # Responsibilities:
-#   - Subscribe to MQTT position/status/alert topics
+#   - Subscribe to MQTT position/status topics
 #   - Write live state to Redis        (latest position/status per device)
 #   - Write full history to TimescaleDB (every position, for analytics)
 #   - Publish ACKs back to the device
 #   - Broadcast live updates to connected dashboards over WebSocket
+#   - Detect per-room crowding from live state and alert both the affected
+#     devices (MQTT "emergency" push) and connected dashboards (WS "alert")
 #   - Serve REST endpoints for floor metadata and history
 #
 # Contract: docs/MQTT_CONTRACT.md (v1.4)
 #   - position: qos=0, retain=false  → live state belongs in Redis, not the broker
 #   - status:   qos=1, retain=true   → last heartbeat visible immediately
 #   - command:  qos=1, retain=false  → ACKs/alerts must arrive, never replayed
+#   - alert:    qos=1, retain=false  → server → device, payload shape in
+#                                       docs/MOBILE_APP_MQTT_RULES.md
 #
 # Dashboard note:
 #   The dashboard reads live state via WebSocket (/ws/live), backed by
 #   Redis and pushed event-driven (on MQTT arrival), not on a timer. It
-#   gets one full snapshot on connect, then incremental position/status
-#   updates as they happen. It no longer needs direct MQTT broker access.
+#   gets one full snapshot on connect, then incremental position/status/
+#   alert updates as they happen. It no longer needs direct MQTT broker access.
 
 import asyncio
 import json
@@ -36,7 +40,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("ips.server")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
@@ -91,19 +98,51 @@ FLOORS_CONFIG_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "floors.json"),
 )
 
+# ── Crowd alerting ──────────────────────────────────────────────────────────
+# A room whose live occupant count reaches CROWD_ALERT_THRESHOLD triggers:
+#   - an MQTT push to every device currently in that room, on its own
+#     ips/<building_id>/device/<device_id>/alert topic, using the payload
+#     shape already documented in docs/MOBILE_APP_MQTT_RULES.md
+#     ({"type": "emergency", "message": ..., "ts": ...}) — this is the
+#     existing mobile contract, not a new one invented here.
+#   - a WS broadcast to every connected dashboard, both on the "warning"
+#     onset AND the "clear" resolution. The dashboard is a monitoring
+#     surface, not a phone doing a full-screen emergency takeover, so it
+#     gets a richer message shape than the MQTT one, and gets told about
+#     both transitions.
+# CROWD_ALERT_HYSTERESIS keeps a room from flapping alert/clear every poll
+# when its live count sits right at the threshold: it must fall to
+# (threshold - hysteresis) before an active alert clears.
+CROWD_ALERT_THRESHOLD = int(os.getenv("CROWD_ALERT_THRESHOLD", "8"))
+CROWD_ALERT_CHECK_INTERVAL_SECONDS = float(os.getenv("CROWD_ALERT_CHECK_INTERVAL_SECONDS", "3"))
+CROWD_ALERT_HYSTERESIS = 2
+
 # ── Globals (set during lifespan startup) ─────────────────────────────────────
 pg_pool: asyncpg.Pool | None = None
 redis_client: redis.Redis | None = None
 mqtt_connected = False  # flipped by mqtt_loop — see /health
+mqtt_client_ref: aiomqtt.Client | None = None  # set by mqtt_loop while connected; crowd_alert_loop publishes through it
 
 REQUIRED_POSITION_FIELDS = {"device_id", "building_id", "floor", "x", "y"}
 REQUIRED_STATUS_FIELDS = {"device_id"}
 
 ACTIVE_DEVICES_SET = "live:devices"
 _position_counter = 0  # only used if HISTORY_SAMPLING_ENABLED
+_room_alert_state: dict[str, dict] = {}  # "building_id:room_id" -> alert record, present only while alerting
 
 with open(FLOORS_CONFIG_PATH) as f:
     FLOORS_CONFIG = json.load(f)
+
+# Precomputed once at import time: (floor, room_id) -> display name, so the
+# alert path doesn't re-scan FLOORS_CONFIG on every check.
+ROOM_NAME_BY_FLOOR: dict[int, dict[str, str]] = {
+    int(floor_key): {room["id"]: room["name"] for room in cfg.get("rooms", [])}
+    for floor_key, cfg in FLOORS_CONFIG.items()
+}
+
+
+def room_name(floor: int, room_id: str) -> str:
+    return ROOM_NAME_BY_FLOOR.get(floor, {}).get(room_id, room_id)
 
 
 def position_key(device_id: str) -> str:
@@ -224,19 +263,19 @@ async def handle_message(client: aiomqtt.Client, message: aiomqtt.Message) -> No
     try:
         data = json.loads(message.payload.decode())
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"[WARN] Bad payload on {topic}, skipping: {e}")
+        logger.warning(f"[MQTT] Bad payload on {topic}, skipping: {e}")
         return
 
     if topic.endswith("/position"):
         if not REQUIRED_POSITION_FIELDS.issubset(data):
-            print(f"[WARN] Missing fields in position payload, skipping: {data}")
+            logger.warning(f"[MQTT] Missing fields in position payload, skipping: {data}")
             return
 
         # Live state is the part that must succeed for the ack to say "stored".
         try:
             await save_position_to_redis(data)
         except Exception as e:
-            print(f"[ERR] Redis write failed for {data.get('device_id')}: {e}")
+            logger.error(f"[REDIS] Write failed for {data.get('device_id')}: {e}")
             await publish_ack(client, data, "error")
             return
 
@@ -250,19 +289,19 @@ async def handle_message(client: aiomqtt.Client, message: aiomqtt.Message) -> No
             try:
                 await save_position_to_postgres(data)
             except Exception as e:
-                print(f"[WARN] History write failed for {data.get('device_id')}: {e}")
+                logger.warning(f"[POSTGRES] History write failed for {data.get('device_id')}: {e}")
 
         await publish_ack(client, data, "stored")
 
     elif topic.endswith("/status"):
         if not REQUIRED_STATUS_FIELDS.issubset(data):
-            print(f"[WARN] Missing fields in status payload, skipping: {data}")
+            logger.warning(f"[MQTT] Missing fields in status payload, skipping: {data}")
             return
 
         try:
             await save_status_to_redis(data)
         except Exception as e:
-            print(f"[ERR] Redis write failed for {data.get('device_id')}: {e}")
+            logger.error(f"[REDIS] Write failed for {data.get('device_id')}: {e}")
             await publish_ack(client, data, "error")
             return
 
@@ -270,28 +309,30 @@ async def handle_message(client: aiomqtt.Client, message: aiomqtt.Message) -> No
         await publish_ack(client, data, "status-updated")
 
     else:
-        print(f"[WARN] Unhandled topic: {topic}")
+        logger.warning(f"[MQTT] Unhandled topic: {topic}")
 
 
 # ── MQTT loop ───────────────────────────────────────────────────────────────────
 
 async def mqtt_loop() -> None:
-    global mqtt_connected
+    global mqtt_connected, mqtt_client_ref
     while True:
         try:
-            print("[MQTT] Connecting to broker...")
+            logger.info("[MQTT] Connecting to broker...")
             async with aiomqtt.Client(MQTT_HOST, port=1883) as client:
                 await client.subscribe("ips/+/device/+/position", qos=0)
                 await client.subscribe("ips/+/device/+/status", qos=1)
                 mqtt_connected = True
-                print("[MQTT] Subscribed to position and status topics.")
+                mqtt_client_ref = client
+                logger.info("[MQTT] Subscribed to position and status topics.")
 
                 async for message in client.messages:
                     await handle_message(client, message)
 
         except Exception as e:
             mqtt_connected = False
-            print(f"[MQTT] Error: {e}. Reconnecting in 5s...")
+            mqtt_client_ref = None
+            logger.error(f"[MQTT] Error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
 
@@ -325,6 +366,108 @@ async def fetch_live_positions() -> dict:
     return {"count": len(items), "items": items}
 
 
+# ── Crowd alerting ─────────────────────────────────────────────────────────────
+
+async def _publish_emergency_to_room(
+    room_id: str, floor: int, count: int, device_ids: list[str], building_id: str
+) -> None:
+    """
+    MQTT push to every device currently in a newly-crowded room. Matches the
+    alert payload already documented in docs/MOBILE_APP_MQTT_RULES.md —
+    {"type": "emergency", "message": ..., "ts": ...} — so an existing mobile
+    client needs no new handling to receive this; extra fields beyond that
+    are additive and safe for any client that ignores unknown keys.
+    """
+    if mqtt_client_ref is None:
+        return
+    name = room_name(floor, room_id)
+    payload = json.dumps({
+        "type": "emergency",
+        "message": f"Crowding detected in {name} — {count} people currently present.",
+        "room_id": room_id,
+        "floor": floor,
+        "count": count,
+        "threshold": CROWD_ALERT_THRESHOLD,
+        "ts": int(time.time()),
+    })
+    for device_id in device_ids:
+        topic = f"ips/{building_id}/device/{device_id}/alert"
+        try:
+            await mqtt_client_ref.publish(topic, payload, qos=1, retain=False)
+        except Exception as e:
+            logger.error(f"[ALERT] Failed to publish emergency to {device_id}: {e}")
+
+
+async def check_crowd_alerts() -> None:
+    """
+    One pass: group current live positions by room (reusing the same Redis
+    snapshot /live/positions already serves — no new state store), compare
+    each room's live occupant count against CROWD_ALERT_THRESHOLD, and act
+    only on state *transitions*, not every poll. Without that, a room
+    sitting above threshold would re-broadcast and re-publish on every
+    single CROWD_ALERT_CHECK_INTERVAL_SECONDS tick — this fires once when a
+    room becomes crowded, and once when it recovers.
+    """
+    live = await fetch_live_positions()
+
+    rooms: dict[str, dict] = {}
+    for item in live["items"]:
+        room_id = item.get("room_id")
+        if not room_id:
+            continue
+        key = f'{item["building_id"]}:{room_id}'
+        bucket = rooms.setdefault(key, {
+            "building_id": item["building_id"],
+            "room_id": room_id,
+            "floor": item["floor"],
+            "device_ids": [],
+        })
+        bucket["device_ids"].append(item["device_id"])
+
+    # Union with existing alert state so a room that just emptied out
+    # entirely (no longer in `rooms` at all) still gets evaluated for clearing.
+    for key in set(rooms.keys()) | set(_room_alert_state.keys()):
+        bucket = rooms.get(key)
+        count = len(bucket["device_ids"]) if bucket else 0
+        was_alerting = key in _room_alert_state
+
+        if not was_alerting and count >= CROWD_ALERT_THRESHOLD:
+            room_id, floor, building_id = bucket["room_id"], bucket["floor"], bucket["building_id"]
+            record = {
+                "room_id": room_id,
+                "floor": floor,
+                "building_id": building_id,
+                "room_name": room_name(floor, room_id),
+                "count": count,
+                "threshold": CROWD_ALERT_THRESHOLD,
+                "ts": int(time.time()),
+            }
+            _room_alert_state[key] = record
+            logger.warning(f"[ALERT] Room {room_id} (floor {floor}) crowded: {count} devices")
+            await manager.broadcast({"type": "alert", "level": "warning", **record})
+            await _publish_emergency_to_room(room_id, floor, count, bucket["device_ids"], building_id)
+
+        elif was_alerting and count <= max(0, CROWD_ALERT_THRESHOLD - CROWD_ALERT_HYSTERESIS):
+            record = {**_room_alert_state.pop(key), "count": count, "ts": int(time.time())}
+            logger.info(f"[ALERT] Room {record['room_id']} back to normal: {count} devices")
+            await manager.broadcast({"type": "alert", "level": "clear", **record})
+
+        elif was_alerting and bucket is not None:
+            # Still alerting — refresh the live count so a dashboard that
+            # connects mid-alert (via the /ws/live snapshot) sees the
+            # current number, not the count that originally tripped it.
+            _room_alert_state[key]["count"] = count
+
+
+async def crowd_alert_loop() -> None:
+    while True:
+        try:
+            await check_crowd_alerts()
+        except Exception as e:
+            logger.error(f"[ALERT] check_crowd_alerts failed: {e}")
+        await asyncio.sleep(CROWD_ALERT_CHECK_INTERVAL_SECONDS)
+
+
 # ── Lifespan ─────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -334,10 +477,10 @@ async def lifespan(app: FastAPI):
     for attempt in range(5):
         try:
             pg_pool = await asyncpg.create_pool(POSTGRES_DSN, min_size=1, max_size=5)
-            print("[DB] PostgreSQL pool created.")
+            logger.info("[POSTGRES] Pool created.")
             break
         except Exception as e:
-            print(f"[DB] Not ready (attempt {attempt + 1}/5): {e}")
+            logger.warning(f"[POSTGRES] Not ready (attempt {attempt + 1}/5): {e}")
             await asyncio.sleep(3)
     else:
         raise RuntimeError("Could not connect to PostgreSQL after 5 attempts.")
@@ -346,29 +489,31 @@ async def lifespan(app: FastAPI):
         try:
             redis_client = redis.from_url(REDIS_URL, decode_responses=True)
             await redis_client.ping()
-            print("[REDIS] Client connected.")
+            logger.info("[REDIS] Client connected.")
             break
         except Exception as e:
-            print(f"[REDIS] Not ready (attempt {attempt + 1}/5): {e}")
+            logger.warning(f"[REDIS] Not ready (attempt {attempt + 1}/5): {e}")
             await asyncio.sleep(3)
     else:
         raise RuntimeError("Could not connect to Redis after 5 attempts.")
 
     task = asyncio.create_task(mqtt_loop(), name="mqtt_loop")
+    alert_task = asyncio.create_task(crowd_alert_loop(), name="crowd_alert_loop")
 
     try:
         yield
     finally:
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        alert_task.cancel()
+        await asyncio.gather(task, alert_task, return_exceptions=True)
 
         await pg_pool.close()
-        print("[DB] PostgreSQL pool closed.")
+        logger.info("[POSTGRES] Pool closed.")
 
         close = getattr(redis_client, "aclose", None)
         if callable(close):
             await close()
-        print("[REDIS] Client closed.")
+        logger.info("[REDIS] Client closed.")
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -426,13 +571,29 @@ async def live_status(device_id: str):
     return {"device_id": device_id, "found": True, "status": json.loads(raw)}
 
 
+@app.get("/alerts/active")
+async def alerts_active():
+    """
+    Currently-crowded rooms, per check_crowd_alerts(). In-memory — resets on
+    server restart, same as the rest of the live (non-history) state. This
+    is the same data a dashboard already gets pushed via /ws/live's
+    snapshot-on-connect and live "alert" broadcasts; exposed as REST too for
+    debugging and for anything that wants a point-in-time read without
+    opening a WebSocket.
+    """
+    return {"count": len(_room_alert_state), "items": list(_room_alert_state.values())}
+
+
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket):
     """
-    Push-only endpoint. Sends one full snapshot on connect, then incremental
-    position/status updates via ConnectionManager.broadcast() as MQTT events
-    arrive — there is no timer here, broadcast() is called directly from
-    handle_message().
+    Push-only endpoint. Sends one full snapshot on connect — live positions
+    plus any currently-active crowd alerts, so a dashboard that connects (or
+    reconnects) mid-alert sees it immediately rather than waiting for the
+    next state transition — then incremental position/status/alert updates
+    via ConnectionManager.broadcast() as MQTT events or crowd_alert_loop
+    transitions arrive. There is no timer here, broadcast() is called
+    directly from handle_message() and check_crowd_alerts().
 
     This coroutine itself does nothing but wait for the client to disconnect.
     It never expects or processes inbound messages, so it uses receive()
@@ -442,7 +603,11 @@ async def ws_live(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         snapshot = await fetch_live_positions()
-        await websocket.send_json({"type": "snapshot", "items": snapshot["items"]})
+        await websocket.send_json({
+            "type": "snapshot",
+            "items": snapshot["items"],
+            "active_alerts": list(_room_alert_state.values()),
+        })
 
         while True:
             await websocket.receive()

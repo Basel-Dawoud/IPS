@@ -2,6 +2,9 @@
 #   - phone.py            (the MQTT simulator — needs aiomqtt + numpy)
 #   - tools/*.py           (floor map rendering/inspection — needs numpy,
 #                            Pillow, and matplotlib for the ASCII/plot inspector)
+#   - tests/*.py           (unit tests for tools/floor_geometry.py — needs
+#                            pytest; runs against the real committed grids,
+#                            no server/Docker stack required)
 #
 # This is NOT used by the server container — server/requirements.txt covers
 # that build independently (FastAPI, asyncpg, redis, etc). Keeping these
@@ -13,3 +16,4 @@ aiomqtt==2.3.0
 numpy>=1.26,<3
 pillow>=10.0
 matplotlib>=3.8
+pytest>=7.0

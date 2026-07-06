@@ -3,7 +3,7 @@
 
 PYTHON ?= ./venv/bin/python
 
-.PHONY: up down reset simulate render-maps logs db redis-cli ps test
+.PHONY: up down reset simulate render-maps logs db redis-cli ps test test-unit
 
 up:
 	docker compose up --build
@@ -36,3 +36,6 @@ ps:
 test:
 	curl -s http://localhost:8000/health | $(PYTHON) -m json.tool
 	curl -s http://localhost:8000/live/positions | $(PYTHON) -m json.tool
+
+test-unit:
+	$(PYTHON) -m pytest tests/ -v

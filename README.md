@@ -104,10 +104,12 @@ phone.py → MQTT → Mosquitto → FastAPI
 │   ├── MQTT_CONTRACT.md          # topic/payload spec — single source of truth for the wire format
 │   ├── DASHBOARD_MQTT_RULES.md
 │   └── MOBILE_APP_MQTT_RULES.md
+├── tests/
+│   └── test_floor_geometry.py  # unit tests against the real committed .npy grids, no Docker needed
 ├── docker-compose.yml
 ├── Makefile
 ├── reset.sh                    # full clean rebuild + health check
-├── requirements.txt             # host-side deps for phone.py + tools/ (NOT used by the server container)
+├── requirements.txt             # host-side deps for phone.py + tools/ + tests (NOT used by the server container)
 └── .env.example
 ```
 
@@ -160,11 +162,12 @@ subscriber loop that never blocks request handling.
 | `GET /rooms?floor=` | Static room directory (id, name, bounding box) |
 | `GET /live/positions` | Current position of every active device (same data the WebSocket sends on connect) |
 | `GET /live/status/{device_id}` | Latest heartbeat for one device |
+| `GET /alerts/active` | Currently-crowded rooms (in-memory, resets on restart) — same data pushed live over `/ws/live` |
 | `GET /history/device/{device_id}?limit=` | Raw position history for one device, most recent first |
 | `GET /analytics/floor/{floor}?minutes=` | 5-minute-bucketed occupancy time series for one floor |
 | `GET /analytics/rooms?floor=&minutes=&limit=` | Per-room visit counts, ranked — "most visited stores" |
 | `GET /analytics/heatmap?floor=&minutes=` | Per-room visit intensity, normalized 0–1 against the busiest room |
-| `WS /ws/live` | Push-only: one full snapshot on connect, then incremental `position`/`status` events the instant they arrive — no polling |
+| `WS /ws/live` | Push-only: one full snapshot on connect (positions *and* any already-active alerts), then incremental `position`/`status`/`alert` events the instant they arrive — no polling |
 
 ### Config (environment variables, all set in `docker-compose.yml` / `.env`)
 
@@ -176,6 +179,8 @@ subscriber loop that never blocks request handling.
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:8080,http://127.0.0.1:8080` | Browser origins allowed to call the API. **Must match the dashboard's origin exactly** (scheme + host + port) or requests are silently blocked — add your demo-day IP here before presenting from anywhere else. |
 | `POSTGRES_HOST/DB/USER/PASSWORD/PORT` | see `.env.example` | Postgres connection |
 | `HISTORY_SAMPLING_ENABLED` | `false` | Optional: write only 1-in-N position messages to Postgres history (Redis/WebSocket always get every message). Off until write volume is actually a problem. |
+| `CROWD_ALERT_THRESHOLD` | `8` | Live occupant count in a room that triggers a crowd alert |
+| `CROWD_ALERT_CHECK_INTERVAL_SECONDS` | `3` | How often room occupancy is re-checked against the threshold — decoupled from MQTT message rate on purpose, see §6a |
 
 ---
 
@@ -210,6 +215,42 @@ license` in the postgres container logs, that's this — the `-oss` tag was
 used and the continuous aggregates silently failed to create (the container
 still reports "healthy" because the healthcheck is just `pg_isready`, which
 has no idea `init.sql` errored out partway through).
+
+---
+
+## 6a. Crowd alerting
+
+`server/main.py` runs a background check (`crowd_alert_loop`, every
+`CROWD_ALERT_CHECK_INTERVAL_SECONDS`) that groups current live positions by
+room and compares each room's occupant count against
+`CROWD_ALERT_THRESHOLD`. This runs on its own timer rather than per MQTT
+message on purpose — checking room occupancy on every single position
+update would scale with message rate for no benefit, exactly the kind of
+hot-path cost this project has otherwise been careful to avoid.
+
+On a room **crossing into** crowded:
+- every device currently in that room gets an MQTT push on its own
+  `ips/<building_id>/device/<device_id>/alert` topic, `{"type": "emergency",
+  "message": ..., "ts": ..., ...}` — matching the payload shape
+  `docs/MOBILE_APP_MQTT_RULES.md` already documented before this existed
+- every connected dashboard gets a `{"type": "alert", "level": "warning",
+  ...}` WebSocket push
+
+On a room **recovering** (dropping to `CROWD_ALERT_THRESHOLD -
+CROWD_ALERT_HYSTERESIS`, a small deadband so a count hovering right at the
+line doesn't flap alert/clear every check), dashboards get a matching
+`"level": "clear"` push. Devices don't get a second MQTT push for this —
+the mobile contract's `"emergency"` type is a full-screen takeover, and
+"you can stop worrying now" isn't really an emergency; the dashboard's own
+channel isn't bound by that contract and benefits from seeing the
+resolution.
+
+A dashboard connecting (or reconnecting) mid-alert doesn't miss it: the
+`/ws/live` snapshot includes `active_alerts` alongside the position list,
+and `GET /alerts/active` exposes the same state over REST.
+
+This state is in-memory only — it resets on server restart, same as the
+rest of the live (non-history) state.
 
 ---
 
@@ -277,6 +318,10 @@ Two static HTML files served by any static file server (e.g.
 - Interpolated device dots with a fading trail, an accuracy halo, and a
   selection ring; click a dot or a list row to select it.
 - **Occupancy panel** — current count on this floor + total across floors.
+- **Active alerts panel** — currently-crowded rooms, populated from
+  `/ws/live`'s `"alert"` events and the connect-time snapshot; a pulsing red
+  outline highlights the affected room on the canvas when it's on the
+  active floor.
 - **Selected device panel** — ID, floor, battery, position, nearest room,
   motion, accuracy, time-in-room (`trackRoomDwell`), last update age.
 - **Live analytics sidebar** — 60-minute occupancy sparkline, most-visited
@@ -332,6 +377,7 @@ Then open `http://localhost:8080/index.html` (live view) and
 | `make logs` | Tail the server container's logs |
 | `make db` / `make redis-cli` | Open a psql / redis-cli shell inside the running container |
 | `make test` | Curl `/health` and `/live/positions` |
+| `make test-unit` | Run the `tests/` pytest suite (floor geometry detection against the real grids) — no Docker stack needed |
 
 ### `reset.sh`
 
