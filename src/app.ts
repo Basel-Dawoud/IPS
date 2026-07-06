@@ -23,6 +23,24 @@ const io = new SocketServer(httpServer, {
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
+// Socket.IO rooms for buildings (emergency updates)
+io.on("connection", (socket) => {
+  socket.on("join_building", (buildingId: string) => {
+    socket.join(`building_${buildingId}`);
+    console.log(`[Socket.IO] Socket ${socket.id} joined building_${buildingId}`);
+  });
+  socket.on("leave_building", (buildingId: string) => {
+    socket.leave(`building_${buildingId}`);
+    console.log(`[Socket.IO] Socket ${socket.id} left building_${buildingId}`);
+  });
+});
+
+// Middleware to attach io to req
+app.use((req: any, res, next) => {
+  req.io = io;
+  next();
+});
+
 // Serve uploaded floor plan images (backend/uploads → /uploads/...).
 app.use("/uploads", express.static(UPLOADS_ROOT));
 app.get("/", (req, res) => {
@@ -34,6 +52,8 @@ initChatSocket(io);
 
 import adminBuildingRoutes from "./modules/admin/buildings/buildings.routes";
 import clientBuildingRoutes from "./modules/client/buildings/buildings.routes";
+import adminEmergencyRoutes from "./modules/admin/emergency/emergency.routes";
+import clientEmergencyRoutes from "./modules/client/emergency/emergency.routes";
 import adminFloorRoutes from "./modules/admin/floors/floors.routes";
 import clientFloorRoutes from "./modules/client/floors/floors.routes";
 import adminBeaconRoutes from "./modules/admin/beacons/beacons.routes";
@@ -59,7 +79,9 @@ app.use(optionalAuth);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/admin/buildings", adminBuildingRoutes);
+app.use("/api/admin/buildings/:buildingId/emergency", adminEmergencyRoutes);
 app.use("/api/client/buildings", clientBuildingRoutes);
+app.use("/api/client/buildings/:buildingId/emergency", clientEmergencyRoutes);
 app.use("/api/admin/floors", adminFloorRoutes);
 app.use("/api/client/floors", clientFloorRoutes);
 app.use("/api/admin/beacons", adminBeaconRoutes);

@@ -20,6 +20,7 @@ export interface CreatePoiInput {
   category?: string;
   aliases?: string[];
   productKeywords?: string[];
+  images?: string[];
   active?: boolean;
 }
 
@@ -42,5 +43,6 @@ export interface UpdatePoiInput {
   category?: string;
   aliases?: string[];
   productKeywords?: string[];
+  images?: string[];
   active?: boolean;
 }

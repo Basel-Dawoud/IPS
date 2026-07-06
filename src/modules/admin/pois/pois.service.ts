@@ -75,3 +75,27 @@ export const setPoiIcon = async (id: string, iconUrl: string) => {
     data: { iconUrl },
   });
 };
+
+export const addPoiGalleryImage = async (id: string, imageUrl: string) => {
+  const poi = await prisma.poi.findUnique({ where: { id } });
+  if (!poi) return null;
+  const images = [...poi.images, imageUrl];
+  const updated = await prisma.poi.update({
+    where: { id },
+    data: { images },
+    include: { category: true },
+  });
+  return flattenCategory(updated);
+};
+
+export const removePoiGalleryImage = async (id: string, imageUrl: string) => {
+  const poi = await prisma.poi.findUnique({ where: { id } });
+  if (!poi) return null;
+  const images = poi.images.filter((img) => img !== imageUrl);
+  const updated = await prisma.poi.update({
+    where: { id },
+    data: { images },
+    include: { category: true },
+  });
+  return flattenCategory(updated);
+};

@@ -60,6 +60,22 @@ export function publicUrlForPoiIcon(filename: string): string {
   return `${publicBase()}/uploads/pois/${filename}`;
 }
 
+export const POIS_GALLERY_UPLOAD_DIR = path.join(UPLOADS_ROOT, "pois-gallery");
+fs.mkdirSync(POIS_GALLERY_UPLOAD_DIR, { recursive: true });
+
+export const poiGalleryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error("Only PNG, JPEG or WebP images are allowed"));
+  },
+});
+
+export function publicUrlForPoiGalleryImage(filename: string): string {
+  return `${publicBase()}/uploads/pois-gallery/${filename}`;
+}
+
 // --- Deal banner images -----------------------------------------------------
 // Stored under backend/uploads/deals and served at /uploads/deals. Processed
 // in memory (sharp) into a web-friendly WebP banner before saving.

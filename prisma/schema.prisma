@@ -48,6 +48,7 @@ model Building {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   measurements Measurement[]
+  emergencyAlert EmergencyAlert?
 }
 
 model Floor {
@@ -404,6 +405,7 @@ model Poi {
   categoryId      String?
   aliases         String[] @default([]) 
   productKeywords String[] @default([]) 
+  images          String[] @default([])
 
   avgRating   Float @default(0)
   reviewCount Int   @default(0)
@@ -416,6 +418,9 @@ model Poi {
   reviews        PoiReview[]
   deals          Deal[]
   buildingVisits BuildingVisit[]
+
+  isEmergencyExit Boolean @default(false)
+  isGatheringPoint Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -430,6 +435,7 @@ enum PoiType {
   STAIRS
   ELEVATOR
   OTHER
+  STORE
 }
 
 
@@ -519,6 +525,7 @@ model User {
   onboardingComplete Boolean       @default(false)
   age                Int?
   gender             String?       // "MALE" | "FEMALE" | "OTHER"
+  needsStepFree      Boolean       @default(false) // prefers elevators over stairs (accessibility)
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
@@ -791,3 +798,16 @@ model ChatPersistedMessage {
 
   @@index([sessionId])
 }
+
+model EmergencyAlert {
+  id               String    @id @default(cuid())
+  buildingId       String    @unique
+  building         Building  @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  isActive         Boolean   @default(false)
+  message          String?
+  gatheringPointId String?   // POI ID acting as gathering point
+  blockedPoiIds    String[]  // List of blocked POI IDs (stairs/elevators)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+

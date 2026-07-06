@@ -21,6 +21,7 @@ function toPublicUser(u: any) {
     onboardingComplete: u.onboardingComplete ?? false,
     age: u.age ?? null,
     gender: u.gender ?? null,
+    needsStepFree: u.needsStepFree ?? false,
     hasPassword: !!u.passwordHash,
   };
 }
@@ -44,7 +45,7 @@ export const saveInterests = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: "Authentication required" });
     }
 
-    const { categoryIds, age, gender } = req.body;
+    const { categoryIds, age, gender, needsStepFree } = req.body;
     if (!Array.isArray(categoryIds)) {
       return sendBadRequest(res, "categoryIds must be an array of category IDs");
     }
@@ -59,6 +60,7 @@ export const saveInterests = async (req: Request, res: Response) => {
         },
         age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
         gender: typeof gender === "string" ? gender : undefined,
+        needsStepFree: typeof needsStepFree === "boolean" ? needsStepFree : undefined,
         onboardingComplete: true,
       },
       include: { interests: true },
@@ -136,13 +138,14 @@ export const updateProfile = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return sendBadRequest(res, parsed.error.issues[0]?.message ?? "Invalid profile data");
     }
-    const { name, age, gender } = parsed.data;
+    const { name, age, gender, needsStepFree } = parsed.data;
 
     // Only touch fields the client actually sent.
     const data: Record<string, unknown> = {};
     if (name !== undefined) data.name = name;
     if (age !== undefined) data.age = age;
     if (gender !== undefined) data.gender = gender;
+    if (needsStepFree !== undefined) data.needsStepFree = needsStepFree;
 
     if (Object.keys(data).length === 0) {
       return sendBadRequest(res, "No profile fields provided");
@@ -235,7 +238,7 @@ export const skipOnboarding = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: "Authentication required" });
     }
 
-    const { age, gender } = req.body;
+    const { age, gender, needsStepFree } = req.body;
     const parsedAge = age ? parseInt(String(age), 10) : undefined;
 
     const user = await prisma.user.update({
@@ -246,6 +249,7 @@ export const skipOnboarding = async (req: Request, res: Response) => {
         },
         age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
         gender: typeof gender === "string" ? gender : undefined,
+        needsStepFree: typeof needsStepFree === "boolean" ? needsStepFree : undefined,
         onboardingComplete: true,
       },
     });

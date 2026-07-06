@@ -49,7 +49,7 @@ export const getBuildingById = async (id: string) => {
     where: { id },
     include: {
       floors: true,
-
+      emergencyAlert: true,
       beacons: {
         where: { active: true },
         select: { beaconUid: true, serviceData: true, floorLevel: true },

@@ -124,6 +124,7 @@ function toPublicUser(u: any): PublicUser {
     onboardingComplete: u.onboardingComplete ?? false,
     age: u.age ?? null,
     gender: u.gender ?? null,
+    needsStepFree: u.needsStepFree ?? false,
     hasPassword: !!u.passwordHash,
   };
 }

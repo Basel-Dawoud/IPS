@@ -7,6 +7,7 @@ export interface PublicUser {
   onboardingComplete: boolean;
   age: number | null;
   gender: string | null;
+  needsStepFree: boolean;
   hasPassword: boolean;
 }
 

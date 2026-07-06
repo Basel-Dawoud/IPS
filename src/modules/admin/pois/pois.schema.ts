@@ -20,6 +20,7 @@ export const createPoiSchema = z.object({
   category: z.string().optional(), // free-text category name (connectOrCreate)
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
+  images: z.array(z.string()).optional(),
   active: z.boolean().optional(),
 });
 
@@ -41,5 +42,6 @@ export const updatePoiSchema = z.object({
   category: z.string().optional(), // free-text name; "" disconnects
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
+  images: z.array(z.string()).optional(),
   active: z.boolean().optional(),
 });
