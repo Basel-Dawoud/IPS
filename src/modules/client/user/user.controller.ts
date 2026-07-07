@@ -22,6 +22,7 @@ function toPublicUser(u: any) {
     age: u.age ?? null,
     gender: u.gender ?? null,
     needsStepFree: u.needsStepFree ?? false,
+    shareWithFriends: u.shareWithFriends ?? true,
     hasPassword: !!u.passwordHash,
   };
 }
@@ -138,7 +139,7 @@ export const updateProfile = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return sendBadRequest(res, parsed.error.issues[0]?.message ?? "Invalid profile data");
     }
-    const { name, age, gender, needsStepFree } = parsed.data;
+    const { name, age, gender, needsStepFree, shareWithFriends } = parsed.data;
 
     // Only touch fields the client actually sent.
     const data: Record<string, unknown> = {};
@@ -146,6 +147,7 @@ export const updateProfile = async (req: Request, res: Response) => {
     if (age !== undefined) data.age = age;
     if (gender !== undefined) data.gender = gender;
     if (needsStepFree !== undefined) data.needsStepFree = needsStepFree;
+    if (shareWithFriends !== undefined) data.shareWithFriends = shareWithFriends;
 
     if (Object.keys(data).length === 0) {
       return sendBadRequest(res, "No profile fields provided");

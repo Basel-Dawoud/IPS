@@ -1,9 +1,9 @@
+import { Prisma } from "../../../generated/prisma/client";
 import prisma from "../../../lib/prisma";
 
 export interface RecommendationInput {
   userId?: string;
-  /** When omitted, recommendations are global (scored across all buildings). */
-  buildingId?: string;
+  buildingId?: string; // When omitted, recommendations are global (scored across all buildings).
   x?: number;
   y?: number;
   floor?: number;
@@ -26,17 +26,14 @@ export interface RecommendedPoi {
   score: number;
 }
 
-/**
- * Calculates Euclidean distance between two points.
- */
+//Calculates Euclidean distance between two points.
 function getDistance(x1: number, y1: number, x2: number, y2: number): number {
   return Math.sqrt(Math.pow(x1 - x2, 2) + Math.pow(y1 - y2, 2));
 }
 
-/**
- * Recommends POIs based on the user's state, location, and similar users' behavior.
- */
-export async function getRecommendations(input: RecommendationInput): Promise<RecommendedPoi[]> {
+export async function getRecommendations(
+  input: RecommendationInput,
+): Promise<RecommendedPoi[]> {
   const { userId, buildingId, x, y, floor } = input;
 
   // 1. Fetch active POIs — in the given building, or across all buildings when
@@ -73,45 +70,45 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
   const colScores: Record<string, number> = {};
   if (userId && userInterests.length > 0) {
     try {
-      // Find other users with overlapping interests
-      const rawSimilar = await prisma.user.findMany({
-        where: {
-          id: { not: userId },
-          interests: {
-            some: {
-              id: { in: userInterests },
-            },
-          },
-        },
-        include: { interests: true },
-      });
+      const rawScores = await prisma.$queryRaw<any[]>`
+        WITH similar_users AS (
+          SELECT 
+            ui."B" AS "userId",
+            COUNT(*)::float / (
+              ${userInterests.length}::float + 
+              (SELECT COUNT(*)::float FROM "_UserInterests" WHERE "B" = ui."B") - 
+              COUNT(*)::float
+            ) AS similarity
+          FROM "_UserInterests" ui
+          WHERE ui."A" IN (${Prisma.join(userInterests)}) AND ui."B" <> ${userId}
+          GROUP BY ui."B"
+          ORDER BY similarity DESC
+          LIMIT 10
+        )
+        SELECT 
+          pv."poiId",
+          SUM(
+            su.similarity * CASE
+              WHEN pv."createdAt" > NOW() - INTERVAL '30 days' THEN 3.0
+              WHEN pv."createdAt" > NOW() - INTERVAL '90 days' THEN 2.0
+              ELSE 1.0
+            END
+          )::float AS score
+        FROM "PoiVisit" pv
+        INNER JOIN similar_users su ON pv."userId" = su."userId"
+        WHERE 1=1
+          ${buildingId ? Prisma.sql`AND pv."buildingId" = ${buildingId}` : Prisma.empty}
+        GROUP BY pv."poiId"
+      `;
 
-      const similarUsers = rawSimilar
-        .map((u) => {
-          const overlap = u.interests.filter((i: any) => userInterests.includes(i.id)).length;
-          return { id: u.id, overlapCount: overlap };
-        })
-        .sort((a, b) => b.overlapCount - a.overlapCount)
-        .slice(0, 10);
-
-      const similarUserIds = similarUsers.map((su) => su.id);
-
-      if (similarUserIds.length > 0) {
-        // Query POIs they visited
-        const visits = await prisma.poiVisit.findMany({
-          where: {
-            userId: { in: similarUserIds },
-            ...(buildingId ? { buildingId } : {}),
-          },
-          select: { poiId: true },
-        });
-
-        for (const v of visits) {
-          colScores[v.poiId] = (colScores[v.poiId] || 0) + 1;
-        }
+      for (const r of rawScores) {
+        colScores[r.poiId] = r.score;
       }
     } catch (err) {
-      console.error("[recommendation.service] Failed computing collaborative scores:", err);
+      console.error(
+        "[recommendation.service] Failed computing collaborative scores:",
+        err,
+      );
     }
   }
   const maxColScore = Math.max(...Object.values(colScores), 1);
@@ -131,7 +128,8 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
       for (const v of personalVisits) {
         personalVisitCounts[v.poiId] = (personalVisitCounts[v.poiId] || 0) + 1;
         if (v.poi.categoryId) {
-          personalCategoryCounts[v.poi.categoryId] = (personalCategoryCounts[v.poi.categoryId] || 0) + 1;
+          personalCategoryCounts[v.poi.categoryId] =
+            (personalCategoryCounts[v.poi.categoryId] || 0) + 1;
         }
       }
     } catch (err) {
@@ -152,13 +150,14 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
     // B. Distance score
     let distanceScore = 0.0;
     if (x !== undefined && y !== undefined && floor !== undefined) {
-      if (poi.floorLevel === floor) {
-        const dist = getDistance(x, y, poi.x, poi.y);
-        distanceScore = 1.0 / (1.0 + dist); // higher is closer
-      } else {
-        // penalty for different floors
-        distanceScore = 0.0;
-      }
+      const floorDifference = Math.abs(poi.floorLevel - floor);
+      const floorPenalty = 15.0; // meters equivalent penalty per floor level change
+      const dist = Math.sqrt(
+        Math.pow(x - poi.x, 2) +
+          Math.pow(y - poi.y, 2) +
+          Math.pow(floorDifference * floorPenalty, 2),
+      );
+      distanceScore = 1.0 / (1.0 + dist);
     }
 
     // C. Rating score
@@ -174,7 +173,8 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
     const historyScore = (personalVisitCounts[poi.id] || 0) / maxPersonalVisits;
 
     // G. Search / Category match score
-    const categoryScore = (personalCategoryCounts[poi.categoryId || ""] || 0) / maxPersonalCategoryVisits;
+    const categoryScore =
+      (personalCategoryCounts[poi.categoryId || ""] || 0) / maxPersonalCategoryVisits;
 
     // Weight combinations
     let score = 0;
@@ -182,11 +182,11 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
       if (hasInterests) {
         // New User with interests
         score =
-          0.30 * interestMatch +
+          0.3 * interestMatch +
           0.25 * distanceScore +
           0.15 * ratingScore +
-          0.10 * popularityScore +
-          0.20 * colScore;
+          0.1 * popularityScore +
+          0.2 * colScore;
       } else {
         // New User (skipped onboarding / anonymous)
         score =
@@ -200,9 +200,9 @@ export async function getRecommendations(input: RecommendationInput): Promise<Re
       score =
         0.35 * historyScore +
         0.25 * categoryScore +
-        0.20 * colScore +
-        0.10 * ratingScore +
-        0.10 * distanceScore;
+        0.2 * colScore +
+        0.1 * ratingScore +
+        0.1 * distanceScore;
     }
 
     return {

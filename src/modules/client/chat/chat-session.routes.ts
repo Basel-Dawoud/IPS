@@ -4,7 +4,6 @@ import { requireAuth } from "../../../middleware/optional-auth";
 
 const router = Router();
 
-// Require authentication for all chat history operations
 router.use(requireAuth);
 
 router.get("/", chatSessionController.getSessions);

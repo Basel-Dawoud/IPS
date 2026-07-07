@@ -392,6 +392,7 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
             capturedAt: new Date(s.capturedAt),
             tMs: s.tMs ?? null,
             headingRad: s.headingRad,
+            compassDeg: s.compassDeg ?? null,
             interpolatedX: pos.x,
             interpolatedY: pos.y,
           };
@@ -429,6 +430,8 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
           gaitEnergy: r.gaitEnergy ?? null,
           gaitIsWalking: r.gaitIsWalking ?? null,
           gaitAmplitude: r.gaitAmplitude ?? null,
+          compassDeg: r.compassDeg ?? null,
+          compassAccuracyDeg: r.compassAccuracyDeg ?? null,
         }));
         for (const chunk of chunked(imuRows)) {
           await tx.trajectoryImuSample.createMany({ data: chunk });
@@ -611,7 +614,7 @@ export const replaySession = async (
         type: "step",
         x: pos.x,
         y: pos.y,
-        payload: { stepIndex: s.stepIndex, headingRad: s.headingRad },
+        payload: { stepIndex: s.stepIndex, headingRad: s.headingRad, compassDeg: s.compassDeg },
       });
     }
 
@@ -633,6 +636,8 @@ export const replaySession = async (
           vertAccel: r.vertAccel, gaitVerticality: r.gaitVerticality,
           gaitEnergy: r.gaitEnergy, gaitIsWalking: r.gaitIsWalking,
           gaitAmplitude: r.gaitAmplitude,
+          // Absolute OS-fused compass (null on legacy rows).
+          compassDeg: r.compassDeg, compassAccuracyDeg: r.compassAccuracyDeg,
         },
       });
     }

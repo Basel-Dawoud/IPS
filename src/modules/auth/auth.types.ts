@@ -8,6 +8,7 @@ export interface PublicUser {
   age: number | null;
   gender: string | null;
   needsStepFree: boolean;
+  shareWithFriends: boolean;
   hasPassword: boolean;
 }
 

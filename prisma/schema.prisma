@@ -6,7 +6,7 @@ generator client {
 
 generator dbml {
   provider   = "prisma-dbml-generator"
-  output     = "../../GraduationProject/docs/diagrams"
+  output     = "../../docs/diagrams"
   outputName = "database-schema.dbml"
 }
 
@@ -47,6 +47,7 @@ model Building {
 
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+  poiUpdatedAt DateTime      @default(now())
   measurements Measurement[]
   emergencyAlert EmergencyAlert?
 }
@@ -526,6 +527,7 @@ model User {
   age                Int?
   gender             String?       // "MALE" | "FEMALE" | "OTHER"
   needsStepFree      Boolean       @default(false) // prefers elevators over stairs (accessibility)
+  shareWithFriends   Boolean       @default(true)  // friends can see my in-building presence
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
@@ -534,6 +536,68 @@ model User {
   poiVisits      PoiVisit[]
   poiReviews     PoiReview[]
   buildingVisits BuildingVisit[]
+  locationShares LocationShare[]
+  friendshipsInitiated Friendship[] @relation("FriendshipRequester")
+  friendshipsReceived  Friendship[] @relation("FriendshipAddressee")
+  presence       UserPresence?
+}
+
+// -------------------- Live location sharing + friends --------------------
+
+/// One-off "share my live location" link. The token is the permission:
+/// anyone holding it may watch until the share expires or is stopped.
+model LocationShare {
+  id             String    @id @default(cuid())
+  token          String    @unique // nanoid(21), the URL secret
+  owner          User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId        String
+  buildingId     String?
+  expiresAt      DateTime? // null = "until stopped"
+  endedAt        DateTime? // set on manual stop
+  lastX          Float?
+  lastY          Float?
+  lastFloorLevel Int?
+  lastUpdateAt   DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([ownerId, endedAt])
+}
+
+/// One row per accepted pair (requester = who created the invite).
+model Friendship {
+  id          String   @id @default(cuid())
+  requester   User     @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  requesterId String
+  addressee   User     @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+  addresseeId String
+  createdAt   DateTime @default(now())
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId])
+}
+
+/// Invite for becoming friends, redeemable via link/QR (token) or typed code.
+model FriendInvite {
+  id        String   @id @default(cuid())
+  token     String   @unique // nanoid, for link/QR
+  code      String   @unique // 6-char A-Z0-9, for manual entry
+  ownerId   String
+  usedById  String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([ownerId])
+}
+
+/// Latest known in-building position per user (upserted, throttled).
+model UserPresence {
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String   @id
+  buildingId String?
+  x          Float?
+  y          Float?
+  floorLevel Int?
+  updatedAt  DateTime @updatedAt
 }
 
 enum AuthProvider {
@@ -681,7 +745,8 @@ model TrajectoryStepEvent {
   stepIndex      Int             // 0-based within walk
   capturedAt     DateTime
   tMs            Float?          // monotonic ms since walk start (B1) — replay clock
-  headingRad     Float           // device heading at the moment the step fired
+  headingRad     Float           // device heading at the moment the step fired (relative yaw)
+  compassDeg     Float?          // absolute OS-fused compass bearing (deg, 0=N, 90=E); legacy rows null
   interpolatedX  Float           // server-computed waypoint-anchored label
   interpolatedY  Float
 
@@ -736,6 +801,11 @@ model TrajectoryImuSample {
   gaitEnergy      Float?   // recent-energy (variance of smoothed |userAccel|) — fast-stop signal
   gaitIsWalking   Boolean? // detector isWalking output at this sample
   gaitAmplitude   Float?   // adaptive peak-valley amplitude of |userAccel| used for step detection
+
+  // Absolute OS-fused compass (use-heading). The absolute bearing the
+  // relative/drifting DeviceMotion yaw lacks. Nullable — legacy rows null.
+  compassDeg         Float? // smoothed compass bearing (deg, 0=N, 90=E)
+  compassAccuracyDeg Float? // approx accuracy half-width (deg); larger = worse
 
   @@index([walkId, capturedAt])
 }

@@ -26,6 +26,7 @@ export interface TrajectoryStepEventInput {
   capturedAt: string; // ISO 8601 — converted to Date in service
   tMs?: number; // monotonic ms since walk start (B1)
   headingRad: number;
+  compassDeg?: number; // absolute OS-fused compass bearing (deg, 0=N); legacy clients omit
 }
 
 export interface TrajectoryCheckpointInput {
@@ -74,6 +75,9 @@ export interface TrajectoryImuSampleInput {
   gaitEnergy?: number;
   gaitIsWalking?: boolean;
   gaitAmplitude?: number;
+  // Absolute OS-fused compass (optional; legacy clients omit).
+  compassDeg?: number;
+  compassAccuracyDeg?: number;
 }
 
 export interface TrajectoryBleReadingInput {

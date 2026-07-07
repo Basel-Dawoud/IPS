@@ -53,7 +53,6 @@ export const getSessionMessages = async (req: Request, res: Response) => {
       return sendNotFound(res, "Chat session");
     }
 
-    // Secure checking: ensure this session belongs to the requesting user
     if (session.userId !== userId) {
       return sendNotFound(res, "Chat session");
     }

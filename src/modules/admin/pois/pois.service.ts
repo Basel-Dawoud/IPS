@@ -20,6 +20,16 @@ const resolveCategoryId = async (name: string): Promise<string> => {
   });
   return cat.id;
 };
+const touchBuildingPoiUpdated = async (buildingId: string) => {
+  try {
+    await prisma.building.update({
+      where: { id: buildingId },
+      data: { poiUpdatedAt: new Date() },
+    });
+  } catch (err) {
+    console.error(`[pois.service] Failed to touch building ${buildingId}:`, err);
+  }
+};
 
 export const createPoi = async (data: CreatePoiInput) => {
   const { category, ...rest } = data;
@@ -27,7 +37,9 @@ export const createPoi = async (data: CreatePoiInput) => {
   if (rest.categoryId === undefined && category?.trim()) {
     rest.categoryId = await resolveCategoryId(category);
   }
-  return prisma.poi.create({ data: rest });
+  const poi = await prisma.poi.create({ data: rest });
+  await touchBuildingPoiUpdated(poi.buildingId);
+  return poi;
 };
 
 export const getPois = async (buildingId: string, floorLevel?: number) => {
@@ -57,23 +69,29 @@ export const updatePoi = async (id: string, data: UpdatePoiInput) => {
     // Free-text name: resolve to an id; empty string clears the category.
     categoryId = category.trim() ? await resolveCategoryId(category) : null;
   }
-  return prisma.poi.update({
+  const poi = await prisma.poi.update({
     where: { id },
     data: { ...rest, ...(categoryId !== undefined ? { categoryId } : {}) },
   });
+  await touchBuildingPoiUpdated(poi.buildingId);
+  return poi;
 };
 
 export const deletePoi = async (id: string) => {
-  return prisma.poi.delete({
+  const poi = await prisma.poi.delete({
     where: { id },
   });
+  await touchBuildingPoiUpdated(poi.buildingId);
+  return poi;
 };
 
 export const setPoiIcon = async (id: string, iconUrl: string) => {
-  return prisma.poi.update({
+  const poi = await prisma.poi.update({
     where: { id },
     data: { iconUrl },
   });
+  await touchBuildingPoiUpdated(poi.buildingId);
+  return poi;
 };
 
 export const addPoiGalleryImage = async (id: string, imageUrl: string) => {
@@ -85,6 +103,7 @@ export const addPoiGalleryImage = async (id: string, imageUrl: string) => {
     data: { images },
     include: { category: true },
   });
+  await touchBuildingPoiUpdated(updated.buildingId);
   return flattenCategory(updated);
 };
 
@@ -97,5 +116,6 @@ export const removePoiGalleryImage = async (id: string, imageUrl: string) => {
     data: { images },
     include: { category: true },
   });
+  await touchBuildingPoiUpdated(updated.buildingId);
   return flattenCategory(updated);
 };

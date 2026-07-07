@@ -125,6 +125,7 @@ function toPublicUser(u: any): PublicUser {
     age: u.age ?? null,
     gender: u.gender ?? null,
     needsStepFree: u.needsStepFree ?? false,
+    shareWithFriends: u.shareWithFriends ?? true,
     hasPassword: !!u.passwordHash,
   };
 }

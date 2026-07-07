@@ -35,6 +35,8 @@ export const trajectoryStepEventSchema = z.object({
   capturedAt: z.string().datetime(),
   tMs: z.number().optional(),
   headingRad: z.number(),
+  // Absolute compass bearing (deg, 0 = N, 90 = E); optional, legacy clients omit.
+  compassDeg: z.number().optional(),
 });
 
 export const trajectoryCheckpointSchema = z.object({
@@ -81,6 +83,10 @@ export const trajectoryImuSampleSchema = z.object({
   gaitEnergy: z.number().optional(),
   gaitIsWalking: z.boolean().optional(),
   gaitAmplitude: z.number().optional(),
+  // Absolute OS-fused compass (optional; legacy clients omit). The absolute
+  // reference the relative/drifting DeviceMotion yaw lacks.
+  compassDeg: z.number().optional(),
+  compassAccuracyDeg: z.number().optional(),
 });
 
 export const trajectoryBleReadingSchema = z.object({

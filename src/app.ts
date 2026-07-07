@@ -8,6 +8,8 @@ import { createServer } from "http";
 import { Server as SocketServer } from "socket.io";
 import { UPLOADS_ROOT } from "./lib/upload";
 import { initChatSocket } from "./modules/client/chat/chat.socket";
+import { initLocationSocket } from "./modules/client/location-sharing/location-sharing.socket";
+import { sharePage, friendInvitePage } from "./modules/client/location-sharing/location-sharing.pages";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,6 +52,11 @@ app.get("/", (req, res) => {
 // Initialize Socket.IO chatbot
 initChatSocket(io);
 
+// Live location sharing: socket relay + browser redirect pages for links/QRs.
+initLocationSocket(io);
+app.get("/s/:token", sharePage);
+app.get("/f/:token", friendInvitePage);
+
 import adminBuildingRoutes from "./modules/admin/buildings/buildings.routes";
 import clientBuildingRoutes from "./modules/client/buildings/buildings.routes";
 import adminEmergencyRoutes from "./modules/admin/emergency/emergency.routes";
@@ -73,6 +80,8 @@ import adminDealRoutes from "./modules/admin/deals/deals.routes";
 import clientDealRoutes from "./modules/client/deals/deals.routes";
 import clientVisitRoutes from "./modules/client/visits/visits.routes";
 import clientSearchRoutes from "./modules/client/search/search.routes";
+import clientLocationSharingRoutes from "./modules/client/location-sharing/location-sharing.routes";
+import clientFriendsRoutes from "./modules/client/location-sharing/friends.routes";
 import { optionalAuth } from "./middleware/optional-auth";
 
 app.use(optionalAuth);
@@ -100,6 +109,8 @@ app.use("/api/admin/deals", adminDealRoutes);
 app.use("/api/client/deals", clientDealRoutes);
 app.use("/api/client/visits", clientVisitRoutes);
 app.use("/api/client/search", clientSearchRoutes);
+app.use("/api/client/location-sharing", clientLocationSharingRoutes);
+app.use("/api/client/friends", clientFriendsRoutes);
 
 app.use(
   (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

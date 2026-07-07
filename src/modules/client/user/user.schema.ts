@@ -6,6 +6,7 @@ export const updateProfileSchema = z.object({
   age: z.number().int().positive().max(120).optional(),
   gender: z.enum(["MALE", "FEMALE", "OTHER"]).optional(),
   needsStepFree: z.boolean().optional(),
+  shareWithFriends: z.boolean().optional(),
 });
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
