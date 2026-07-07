@@ -8,10 +8,14 @@ Shared geometry engine for the IPS floor maps. Used by:
 Responsibilities:
   1. Detect the main corridor band on a floor automatically from the raw grid.
   2. Detect the column boundaries of the bottom-row rooms automatically.
-  3. Hold the canonical, human-provided room number/name directory — this is
+  3. Divide the corridor band itself into evenly-spaced heatmap tiles
+     (CorridorSegment), so foot traffic *walking the corridor* can be
+     visualized on its own floor surface — not just attributed to the
+     nearest shop.
+  4. Hold the canonical, human-provided room number/name directory — this is
      real-world business data that cannot be derived from the grid, so it is
      deliberately kept as plain configuration here rather than inferred.
-  4. Render a lossless SVG floor plan with room labels baked in, Google-Maps
+  5. Render a lossless SVG floor plan with room labels baked in, Google-Maps
      style, anchored at the bottom of each labeled room.
 
 Design note on the split between "detected" and "configured" data:
@@ -218,6 +222,81 @@ def build_rooms_for_floor(
         rooms.append(Room(room_id, name, floor, col_start, col_end, row_start, row_end))
 
     return rooms, (row_start, row_end)
+
+
+@dataclass(frozen=True)
+class CorridorSegment:
+    """
+    One tile of the corridor's OWN walkable surface — used to heat-tint the
+    corridor band itself (people walking past) independently of the room
+    blocks alongside it. Unlike Room, a segment has no name/business
+    identity; it's pure geometry.
+    """
+    segment_id: str
+    floor: int
+    col_start: int
+    col_end: int
+    row_start: int
+    row_end: int
+
+    @property
+    def width(self) -> int:
+        return self.col_end - self.col_start + 1
+
+
+# Real-world length of one corridor heatmap tile. 5m keeps tiles roughly
+# proportioned against the corridor's own band width (~14 rows, ~2.7m) —
+# fine enough to localize crowding along the corridor's length, coarse
+# enough that a handful of devices don't paint the whole floor red. Tune
+# here; tools/render_floor_maps.py re-derives tile count/width from this
+# any time floor assets are regenerated, the same way ROOM_DIRECTORY
+# changes flow through automatically.
+CORRIDOR_SEGMENT_LENGTH_METERS = 5.0
+
+
+def build_corridor_segments(
+    floor: int,
+    cols: int,
+    corridor_band: tuple[int, int],
+    meters_per_cell: float,
+    segment_length_m: float = CORRIDOR_SEGMENT_LENGTH_METERS,
+) -> list[CorridorSegment]:
+    """
+    Divides the corridor band into consecutive, full-width column tiles
+    ~segment_length_m meters long each, so the corridor's own floor surface
+    can be heat-tinted for foot traffic — not just the rooms beside it.
+
+    Deliberately different from build_rooms_for_floor(): this covers
+    columns [0, cols) completely and does not skip or merge around
+    unlabeled blocks/gaps in the room directory. The corridor is walkable
+    along its entire length regardless of what's labeled next to it, so its
+    crowding map shouldn't have holes just because the shop directory does.
+    Segments are spaced by real length, not aligned to room column
+    boundaries — a tile can straddle two shopfronts, which is fine: this is
+    a map of the corridor surface, not a per-shop statistic. The final tile
+    is whatever length is left over (<= segment_length_m) rather than
+    dropped or merged into its neighbor, so the tiles still cover the full
+    corridor with no gap at the far end.
+    """
+    row_start, row_end = corridor_band
+    segment_cols = max(1, round(segment_length_m / meters_per_cell))
+
+    segments: list[CorridorSegment] = []
+    idx = 0
+    col = 0
+    while col < cols:
+        col_end = min(col + segment_cols - 1, cols - 1)
+        segments.append(CorridorSegment(
+            segment_id=f"{floor}-corridor-{idx:02d}",
+            floor=floor,
+            col_start=col,
+            col_end=col_end,
+            row_start=row_start,
+            row_end=row_end,
+        ))
+        idx += 1
+        col += segment_cols
+    return segments
 
 
 # ── SVG rendering ──────────────────────────────────────────────────────────────

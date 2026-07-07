@@ -24,10 +24,11 @@ an aspirational spec.
   dashboards over a WebSocket.
 - **`dashboard/index.html`** is the live floor-plan view: animated dots,
   trails, per-device detail panel, live pipeline health, and a rolling
-  60-minute occupancy/heatmap sidebar.
+  60-minute occupancy/heatmap sidebar that tints both stores *and* the
+  corridor's own floor surface between them.
 - **`dashboard/analytics.html`** is the historical/reporting view: peak
-  occupancy, visitors per floor, top stores, room heatmaps, hourly traffic,
-  and live throughput metrics.
+  occupancy, visitors per floor, top stores, store & corridor heatmaps,
+  hourly traffic, and live throughput metrics.
 
 ---
 
@@ -48,7 +49,8 @@ FastAPI Backend (server/main.py)   ← the ONLY service that writes to storage
     │
     └──▶ PostgreSQL + TimescaleDB  ← full position history
               │
-              └──▶ Continuous aggregates → occupancy charts, room heatmaps, "most visited"
+              └──▶ Continuous aggregates → occupancy charts, store & corridor
+                                            heatmaps, "most visited"
 ```
 
 The dashboard reads from **both** storages through the FastAPI API layer —
@@ -69,7 +71,7 @@ phone.py → MQTT → Mosquitto → FastAPI
 | Question | Answered from | Why |
 |---|---|---|
 | Where is everyone right now? | Redis, via `/ws/live` | Sub-millisecond reads, pushed the instant a position arrives |
-| Occupancy chart / heatmap / top stores | PostgreSQL continuous aggregates | Historical range query; a few seconds of latency is fine |
+| Occupancy chart / store & corridor heatmap / top stores | PostgreSQL continuous aggregates | Historical range query; a few seconds of latency is fine |
 | Is a device still around? | Redis TTL | Keys expire automatically — no manual cleanup, no "ghost" devices |
 | Full movement history for one device | PostgreSQL | Persistent record, never expires |
 
@@ -82,7 +84,7 @@ phone.py → MQTT → Mosquitto → FastAPI
 ├── phone.py                 # MQTT simulator — the "phone"
 ├── server/
 │   ├── main.py               # FastAPI backend — MQTT, Redis, Postgres, WebSocket, REST
-│   ├── floors.json           # generated: per-floor dimensions, corridor rows, room directory
+│   ├── floors.json           # generated: per-floor dimensions, corridor rows + segments, room directory
 │   ├── Dockerfile
 │   └── requirements.txt      # server-only deps (fastapi, asyncpg, redis, aiomqtt, websockets)
 ├── dashboard/
@@ -90,10 +92,10 @@ phone.py → MQTT → Mosquitto → FastAPI
 │   ├── analytics.html         # historical analytics view
 │   └── assets/                # generated floor_3/floor_4 .svg + .png
 ├── db/
-│   ├── init.sql                # device_positions hypertable + continuous aggregates
+│   ├── init.sql                # device_positions hypertable + continuous aggregates (room_visits, corridor_visits, crowd_analytics)
 │   └── 02-rooms.sql            # generated: rooms table seed (id, name, bounding box)
 ├── tools/
-│   ├── floor_geometry.py       # detects corridor band + room blocks from the raw grids
+│   ├── floor_geometry.py       # detects corridor band + room blocks, tiles the corridor into heatmap segments
 │   ├── render_floor_maps.py    # regenerates SVG/PNG assets, floors.json, 02-rooms.sql
 │   └── inspect_floor_maps.py   # ASCII + matplotlib inspector for the raw .npy grids
 ├── maps/
@@ -158,7 +160,7 @@ subscriber loop that never blocks request handling.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | MQTT/Redis/Postgres connectivity, for the dashboard's status strip |
-| `GET /floors` | Full contents of `floors.json` — dimensions, image path, `meters_per_cell` calibration, corridor rows, room directory |
+| `GET /floors` | Full contents of `floors.json` — dimensions, image path, `meters_per_cell` calibration, corridor rows, `corridor_segments` (corridor heatmap tiles), room directory |
 | `GET /rooms?floor=` | Static room directory (id, name, bounding box) |
 | `GET /live/positions` | Current position of every active device (same data the WebSocket sends on connect) |
 | `GET /live/status/{device_id}` | Latest heartbeat for one device |
@@ -167,6 +169,7 @@ subscriber loop that never blocks request handling.
 | `GET /analytics/floor/{floor}?minutes=` | 5-minute-bucketed occupancy time series for one floor |
 | `GET /analytics/rooms?floor=&minutes=&limit=` | Per-room visit counts, ranked — "most visited stores" |
 | `GET /analytics/heatmap?floor=&minutes=` | Per-room visit intensity, normalized 0–1 against the busiest room |
+| `GET /analytics/heatmap/corridor?floor=&minutes=` | Per-corridor-segment visit intensity, normalized 0–1 against the busiest segment — tints the corridor's own floor, not the shops beside it |
 | `WS /ws/live` | Push-only: one full snapshot on connect (positions *and* any already-active alerts), then incremental `position`/`status`/`alert` events the instant they arrive — no polling |
 
 ### Config (environment variables, all set in `docker-compose.yml` / `.env`)
@@ -187,19 +190,35 @@ subscriber loop that never blocks request handling.
 ## 6. Storage (`db/init.sql`, `db/02-rooms.sql`)
 
 - **`device_positions`** — a TimescaleDB hypertable, one row per position
-  sample: `ts, device_id, building_id, floor, zone_id, room_id, x, y`.
-  Indexed by `(device_id, ts)` and `(building_id, floor, ts)` for fast
-  per-device and per-floor queries.
+  sample: `ts, device_id, building_id, floor, zone_id, room_id,
+  corridor_segment_id, x, y`. Indexed by `(device_id, ts)`,
+  `(building_id, floor, ts)`, `(room_id, ts)` and `(corridor_segment_id, ts)`
+  for fast per-device, per-floor, per-room, and per-corridor-segment queries.
+  `corridor_segment_id` is **not** sent by the client — it's derived
+  server-side, on write, from the sample's `x`/`y` against
+  `floors.json`'s `corridor_segments` (see `corridor_segment_id_for()` in
+  `server/main.py`), so no MQTT contract change was needed to add it.
 - **`crowd_analytics`** — a continuous aggregate: unique device count per
   floor, bucketed every 5 minutes. Powers `/analytics/floor/{floor}`.
 - **`room_visits`** — a continuous aggregate: visit count per room,
   bucketed every 5 minutes, excluding samples with no `room_id` (e.g. a
   device in the corridor between stores). Powers `/analytics/rooms` and
   `/analytics/heatmap`.
+- **`corridor_visits`** — a continuous aggregate: visit count per
+  *corridor segment*, bucketed every 5 minutes, excluding samples with no
+  `corridor_segment_id`. Powers `/analytics/heatmap/corridor`, which tints
+  the corridor's own floor surface — a separate crowding signal from
+  `room_visits`, since a busy corridor doesn't necessarily mean any one
+  shop is busy, and vice versa.
 - **`rooms`** — a plain table (id, floor, name, bounding box), regenerated
   by `tools/render_floor_maps.py` from the same `Room` objects used to
   label the SVG floor plans, so the database and the dashboard's labels can
-  never drift apart.
+  never drift apart. Corridor segments have no name/business identity, so
+  unlike rooms they live only in `floors.json`, not in their own Postgres
+  table — `/analytics/heatmap/corridor` returns bare `corridor_segment_id`s
+  and the dashboard joins them against `floors.json`'s `corridor_segments`
+  client-side, the same way it already joins room heatmap intensities
+  against `floors.json`'s `rooms`.
 
 **Important:** continuous aggregates rely on TimescaleDB's background job
 scheduler (`add_continuous_aggregate_policy`), which is **not** included in
@@ -215,6 +234,14 @@ license` in the postgres container logs, that's this — the `-oss` tag was
 used and the continuous aggregates silently failed to create (the container
 still reports "healthy" because the healthcheck is just `pg_isready`, which
 has no idea `init.sql` errored out partway through).
+
+**`init.sql` only runs on a fresh Postgres volume.** If you're upgrading an
+existing deployment to pick up the `corridor_segment_id` column and
+`corridor_visits` aggregate, a plain `docker compose up` won't apply them —
+you need `make reset` (or `./reset.sh`), which stops the stack, deletes the
+volumes, and rebuilds from scratch. There's no in-place migration path here
+by design; this project has no migrations system, `init.sql` *is* the
+schema.
 
 ---
 
@@ -376,7 +403,11 @@ Two static HTML files served by any static file server (e.g.
 - **Selected device panel** — ID, floor, battery, position, nearest room,
   motion, accuracy, time-in-room (`trackRoomDwell`), last update age.
 - **Live analytics sidebar** — 60-minute occupancy sparkline, most-visited
-  stores, and an optional per-room heatmap overlay that shows a clear "no
+  stores, and an optional heatmap overlay that tints both per-room
+  bounding boxes *and* the corridor's own floor surface (in
+  `CORRIDOR_SEGMENT_LENGTH_METERS`-wide tiles — see
+  `floor_geometry.build_corridor_segments`), so crowding shows up on the
+  walkway itself, not just on the shops beside it. Shows a clear "no
   traffic data yet" note instead of a misleading empty tint when a floor
   has no real visits in the window.
 - **System health strip** — MQTT/Redis/DB connectivity dots, polled from
@@ -386,7 +417,9 @@ Two static HTML files served by any static file server (e.g.
 - **Peak occupancy** (24h) and **visitors per floor**, computed from
   `/analytics/floor/{floor}`.
 - **Top stores**, from `/analytics/rooms`.
-- **Per-floor heatmap tiles**, from `/analytics/heatmap`.
+- **Per-floor heatmap tiles**, from `/analytics/heatmap` (rooms) and
+  `/analytics/heatmap/corridor` (the corridor band itself), painted onto
+  the same tile with a shared color scale.
 - **Hourly traffic chart** — a true chronological last-24-hours timeline
   (bucketed by elapsed hours-ago from now, not by hour-of-day, so a window
   crossing midnight doesn't merge two different days into one bar).
@@ -458,7 +491,10 @@ This rewrites `dashboard/assets/floor_*.svg`/`.png`, `server/floors.json`
 (preserving any manually-calibrated `meters_per_cell`/`origin` you've
 already set), and `db/02-rooms.sql` — all from the same detected room
 geometry, so the SVG labels, the dashboard's room lookup, and the database
-seed can never disagree with each other.
+seed can never disagree with each other. `floors.json`'s `corridor_segments`
+(the corridor heatmap tiles) are recomputed the same way; edit
+`CORRIDOR_SEGMENT_LENGTH_METERS` in `tools/floor_geometry.py` to change
+their resolution before re-running this.
 
 `meters_per_cell` is computed automatically from `REAL_FLOOR_LENGTH_METERS`
 (see §7a) — no manual measurement-and-edit step needed for a fresh
@@ -508,3 +544,9 @@ than `null` or the old `1.0` placeholder) is still preserved across re-renders.
 - `phone.py`'s stair columns (`STAIRS` dict) are configured per floor by
   hand; regenerating the floor grids at a very different scale would need
   those columns re-checked.
+- Corridor heatmap tiles are spaced by real length
+  (`CORRIDOR_SEGMENT_LENGTH_METERS`, default 5m) across the corridor's full
+  width, independent of room column boundaries — a tile can straddle two
+  shopfronts. That's intentional (it's a map of the corridor surface, not a
+  per-shop stat), but it does mean corridor tile edges won't always line up
+  visually with the room edges directly above them.

@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS device_positions (
     floor       INTEGER          NOT NULL,
     zone_id     TEXT,                        -- nullable: matches MQTT contract, not always known
     room_id     TEXT,                        -- nullable: nearest store/room, see db/02-rooms.sql
+    corridor_segment_id TEXT,                 -- nullable: which corridor heatmap tile, derived
+                                               -- server-side (never sent by the client) — see
+                                               -- corridor_segment_id_for() in server/main.py
     x           DOUBLE PRECISION NOT NULL,
     y           DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (ts, id)
@@ -28,6 +31,10 @@ CREATE INDEX IF NOT EXISTS idx_device_positions_building_floor_ts
 CREATE INDEX IF NOT EXISTS idx_device_positions_room_ts
     ON device_positions (room_id, ts DESC)
     WHERE room_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_device_positions_corridor_ts
+    ON device_positions (corridor_segment_id, ts DESC)
+    WHERE corridor_segment_id IS NOT NULL;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- Analytics — continuous aggregates
@@ -83,6 +90,35 @@ WITH NO DATA;
 
 SELECT add_continuous_aggregate_policy(
     'room_visits',
+    start_offset      => INTERVAL '1 hour',
+    end_offset        => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '1 minute',
+    if_not_exists     => TRUE
+);
+
+-- Per-corridor-segment foot traffic, bucketed every 5 minutes. Powers the
+-- corridor heatmap tint on the dashboard/analytics pages — the corridor's
+-- own floor surface, not the shops beside it. corridor_segment_id is
+-- derived server-side from x/y (see corridor_segment_id_for() in
+-- server/main.py), never sent by the client. NULL rows (uncalibrated
+-- floor, or — relevant only if CORRIDOR_ONLY=false is ever used — a
+-- sample that's genuinely inside a room, not the corridor) are excluded,
+-- the same pattern room_visits uses for NULL room_id.
+CREATE MATERIALIZED VIEW IF NOT EXISTS corridor_visits
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('5 minutes', ts) AS bucket,
+    building_id,
+    floor,
+    corridor_segment_id,
+    COUNT(DISTINCT device_id)    AS visit_count
+FROM device_positions
+WHERE corridor_segment_id IS NOT NULL
+GROUP BY bucket, building_id, floor, corridor_segment_id
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy(
+    'corridor_visits',
     start_offset      => INTERVAL '1 hour',
     end_offset        => INTERVAL '1 minute',
     schedule_interval => INTERVAL '1 minute',

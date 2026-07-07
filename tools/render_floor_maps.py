@@ -11,8 +11,10 @@ Generates, from the real floor grid arrays (maps/floor_*_grid.npy):
      that prefers a bitmap (e.g. quick image viewers, older browsers).
   3. server/floors.json             — single source of truth for floor
      metadata: dimensions, corridor_rows, meters_per_cell, the room
-     directory (id/name/bounding box). Preserves any manually-calibrated
-     meters_per_cell / origin across re-renders.
+     directory (id/name/bounding box), and corridor_segments (the
+     corridor's own heatmap tiles — see floor_geometry.build_corridor_segments).
+     Preserves any manually-calibrated meters_per_cell / origin across
+     re-renders.
   4. db/02-rooms.sql                — generated seed for the `rooms` table,
      produced from the exact same Room objects used for the SVG labels and
      floors.json, so the database and the frontend can never drift apart.
@@ -112,6 +114,16 @@ def room_to_dict(room: geo.Room) -> dict:
     }
 
 
+def corridor_segment_to_dict(segment: geo.CorridorSegment) -> dict:
+    return {
+        "id": segment.segment_id,
+        "col_start": segment.col_start,
+        "col_end": segment.col_end,
+        "row_start": segment.row_start,
+        "row_end": segment.row_end,
+    }
+
+
 def write_rooms_sql(all_rooms: dict[int, list[geo.Room]], path: str) -> None:
     lines = [
         "-- db/02-rooms.sql",
@@ -184,6 +196,10 @@ def main() -> None:
         else:
             meters_per_cell = prior_mpc
 
+        corridor_segments = geo.build_corridor_segments(
+            floor, cols, corridor_band, meters_per_cell
+        )
+
         config[floor_key] = {
             "cols": cols,
             "rows": rows,
@@ -191,6 +207,7 @@ def main() -> None:
             "meters_per_cell": meters_per_cell,
             "origin": existing.get("origin", {"col": 0, "row": 0}),
             "corridor_rows": list(corridor_band),
+            "corridor_segments": [corridor_segment_to_dict(s) for s in corridor_segments],
             "rooms": [room_to_dict(r) for r in rooms],
         }
 
@@ -198,6 +215,7 @@ def main() -> None:
         print(
             f"Floor {floor}: {cols}x{rows} cells | "
             f"corridor_rows={corridor_band} | rooms={len(rooms)} | "
+            f"corridor_segments={len(corridor_segments)} | "
             f"meters_per_cell={meters_per_cell:.5f} (calibrated to "
             f"{REAL_FLOOR_LENGTH_METERS}m length) -> implied width "
             f"{implied_width:.2f}m vs stated {REAL_FLOOR_WIDTH_METERS}m | "

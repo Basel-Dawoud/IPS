@@ -145,6 +145,55 @@ def room_name(floor: int, room_id: str) -> str:
     return ROOM_NAME_BY_FLOOR.get(floor, {}).get(room_id, room_id)
 
 
+# ── Corridor heatmap ─────────────────────────────────────────────────────────
+# corridor_segment_id is derived HERE, server-side, from a position's real-
+# meter x/y against server/floors.json's corridor_segments — it is never
+# sent by the client, so none of this needs an MQTT contract change. This
+# mirrors how the dashboard already turns x/y into grid cells for drawing
+# (see metersToCell() in dashboard/index.html); the server just does the
+# same conversion to decide which corridor tile a sample belongs to.
+#
+# CORRIDOR_ROW_TOLERANCE_CELLS absorbs jitter (see phone.py's
+# POSITION_JITTER_METERS) right at the edge of the detected corridor band
+# without starting to count genuine room interiors as corridor traffic —
+# small on purpose, since the band itself is already ~13-14 rows tall.
+CORRIDOR_ROW_TOLERANCE_CELLS = 3
+
+
+def corridor_segment_id_for(floor: int, x: float, y: float) -> str | None:
+    """
+    Which corridor heatmap tile (server/floors.json's corridor_segments)
+    this position falls into, or None if it isn't corridor foot traffic at
+    all — the floor isn't calibrated, has no corridor_segments generated
+    yet, or (only relevant if CORRIDOR_ONLY=false is ever used) the device
+    is genuinely inside a room rather than the corridor. None here is the
+    corridor analog of room_id being absent: "don't count this sample".
+    """
+    cfg = FLOORS_CONFIG.get(str(floor))
+    if not cfg:
+        return None
+
+    meters_per_cell = cfg.get("meters_per_cell")
+    segments = cfg.get("corridor_segments")
+    corridor_rows = cfg.get("corridor_rows")
+    if not meters_per_cell or not segments or not corridor_rows:
+        return None
+
+    origin = cfg.get("origin") or {}
+    row = origin.get("row", 0) + y / meters_per_cell
+    col = origin.get("col", 0) + x / meters_per_cell
+
+    row_start, row_end = corridor_rows
+    if not (row_start - CORRIDOR_ROW_TOLERANCE_CELLS <= row <= row_end + CORRIDOR_ROW_TOLERANCE_CELLS):
+        return None
+
+    col_clamped = min(max(col, 0), cfg["cols"] - 1)
+    for segment in segments:
+        if segment["col_start"] <= col_clamped <= segment["col_end"]:
+            return segment["id"]
+    return None
+
+
 def position_key(device_id: str) -> str:
     return f"live:position:{device_id}"
 
@@ -213,15 +262,21 @@ async def save_position_to_postgres(data: dict) -> None:
     Insert one row into the device_positions hypertable.
     zone_id and room_id are both optional — stored as NULL if absent.
     room_id (nearest store/room, from phone.py's floors.json lookup) feeds
-    the room_visits continuous aggregate used by /analytics/rooms.
+    the room_visits continuous aggregate used by /analytics/rooms and
+    /analytics/heatmap.
+    corridor_segment_id is NOT read from data — it's computed here via
+    corridor_segment_id_for(), and feeds the corridor_visits continuous
+    aggregate used by /analytics/heatmap/corridor, which tints the
+    corridor's own floor surface (not the shops beside it).
     """
+    corridor_segment_id = corridor_segment_id_for(data["floor"], data["x"], data["y"])
     async with pg_pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO device_positions
-                (ts, device_id, building_id, floor, zone_id, room_id, x, y)
+                (ts, device_id, building_id, floor, zone_id, room_id, corridor_segment_id, x, y)
             VALUES
-                (to_timestamp($1), $2, $3, $4, $5, $6, $7, $8)
+                (to_timestamp($1), $2, $3, $4, $5, $6, $7, $8, $9)
             """,
             int(data.get("ts", time.time())),
             data["device_id"],
@@ -229,6 +284,7 @@ async def save_position_to_postgres(data: dict) -> None:
             data["floor"],
             data.get("zone_id"),
             data.get("room_id"),
+            corridor_segment_id,
             data["x"],
             data["y"],
         )
@@ -627,7 +683,7 @@ async def device_history(
     async with pg_pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT ts, device_id, building_id, floor, zone_id, room_id, x, y
+            SELECT ts, device_id, building_id, floor, zone_id, room_id, corridor_segment_id, x, y
             FROM device_positions
             WHERE device_id = $1
             ORDER BY ts DESC
@@ -772,5 +828,45 @@ async def analytics_heatmap(
             "intensity": round(count / peak, 3) if peak > 0 else 0.0,
         }
         for room_id, count in counts.items()
+    ]
+    return {"floor": floor, "minutes": minutes, "peak_visits": peak, "items": items}
+
+
+@app.get("/analytics/heatmap/corridor")
+async def analytics_corridor_heatmap(
+    floor: int = Query(...),
+    minutes: int = Query(default=60, ge=5, le=1440),
+):
+    """
+    Per-corridor-segment visit intensity for one floor, normalized 0-1
+    against the busiest segment in the window. Source: corridor_visits
+    continuous aggregate. Mirrors /analytics/heatmap, but for the
+    corridor's own floor surface: the dashboard tints each segment's
+    bounding box (from /floors -> corridor_segments) using this intensity
+    when "heatmap mode" is toggled on, so crowding shows up on the
+    corridor itself, not just on the shops alongside it.
+    """
+    async with pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT corridor_segment_id, SUM(visit_count) AS total_visits
+            FROM corridor_visits
+            WHERE floor = $1
+              AND bucket >= NOW() - ($2 || ' minutes')::interval
+            GROUP BY corridor_segment_id
+            """,
+            floor, str(minutes),
+        )
+
+    counts = {r["corridor_segment_id"]: int(r["total_visits"]) for r in rows}
+    peak = max(counts.values(), default=0)
+
+    items = [
+        {
+            "corridor_segment_id": segment_id,
+            "total_visits": count,
+            "intensity": round(count / peak, 3) if peak > 0 else 0.0,
+        }
+        for segment_id, count in counts.items()
     ]
     return {"floor": floor, "minutes": minutes, "peak_visits": peak, "items": items}

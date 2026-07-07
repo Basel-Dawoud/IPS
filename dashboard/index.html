@@ -348,7 +348,7 @@
           <span>low</span><span class="bar"></span><span>high</span>
         </div>
         <div class="heatmap-note" id="heatmapNote" style="display:none">
-          No store-traffic data yet for this floor/window.
+          No store or corridor traffic data yet for this floor/window.
         </div>
         <div class="calib-note" id="calibNote" style="display:none">
           meters_per_cell not set in server/floors.json — live dots are
@@ -427,7 +427,7 @@
 
       <div class="panel-section">
         <label class="analytics-toggle">
-          <span>Heatmap overlay (store traffic)</span>
+          <span>Heatmap overlay (stores & corridors)</span>
           <input type="checkbox" id="heatmapToggle">
         </label>
 
@@ -493,7 +493,9 @@ let activeFloor = null;
 let selectedDeviceId = null;
 let heatmapEnabled = false;
 let heatmapData = {};        // room_id -> intensity (0..1), refreshed on each analytics poll
-let heatmapHasData = false;
+let roomHeatmapHasData = false;
+let corridorHeatmapData = {};   // corridor_segment_id -> intensity (0..1), refreshed on each analytics poll
+let corridorHeatmapHasData = false;
 let activeAlerts = {};       // room_id -> latest alert record, present only while that room is alerting
 
 const devicesByFloor = {};   // floor -> Map(device_id -> {prev, target, trail, ...})
@@ -1200,21 +1202,39 @@ function renderOccupancyChart(items){
 }
 
 async function fetchHeatmapData(){
+  await Promise.all([fetchRoomHeatmapData(), fetchCorridorHeatmapData()]);
+  updateHeatmapNote();
+}
+
+async function fetchRoomHeatmapData(){
   try {
     const res = await fetch(`${API_BASE}/analytics/heatmap?floor=${activeFloor}&minutes=${ANALYTICS_WINDOW_MINUTES}`);
     const data = await res.json();
     heatmapData = {};
     (data.items || []).forEach(item => { heatmapData[item.room_id] = item.intensity; });
-    heatmapHasData = (data.items || []).some(item => item.intensity > 0);
+    roomHeatmapHasData = (data.items || []).some(item => item.intensity > 0);
   } catch {
     heatmapData = {};
-    heatmapHasData = false;
+    roomHeatmapHasData = false;
   }
-  updateHeatmapNote();
+}
+
+async function fetchCorridorHeatmapData(){
+  try {
+    const res = await fetch(`${API_BASE}/analytics/heatmap/corridor?floor=${activeFloor}&minutes=${ANALYTICS_WINDOW_MINUTES}`);
+    const data = await res.json();
+    corridorHeatmapData = {};
+    (data.items || []).forEach(item => { corridorHeatmapData[item.corridor_segment_id] = item.intensity; });
+    corridorHeatmapHasData = (data.items || []).some(item => item.intensity > 0);
+  } catch {
+    corridorHeatmapData = {};
+    corridorHeatmapHasData = false;
+  }
 }
 
 function updateHeatmapNote(){
-  heatmapNote.style.display = (heatmapEnabled && !heatmapHasData) ? 'block' : 'none';
+  const hasAnyData = roomHeatmapHasData || corridorHeatmapHasData;
+  heatmapNote.style.display = (heatmapEnabled && !hasAnyData) ? 'block' : 'none';
 }
 
 async function fetchMostVisited(){
@@ -1288,7 +1308,8 @@ function drawAlertPulses(){
 function drawHeatmap(){
   const dims = floorsConfig[activeFloor];
   const rooms = dims.rooms || [];
-  if (!rooms.length) return;
+  const corridorSegments = dims.corridor_segments || [];
+  if (!rooms.length && !corridorSegments.length) return;
 
   const HEAT_COLORS = [
     [45, 212, 167],    // cool  — var(--signal) green
@@ -1322,6 +1343,24 @@ function drawHeatmap(){
     ctx.strokeRect(room.col_start, room.row_start,
                    room.col_end - room.col_start,
                    room.row_end - room.row_start);
+  });
+
+  // Corridor tiles: the corridor's own floor surface, tinted the same way
+  // as rooms above (same color ramp, same "0 intensity = no paint" rule)
+  // so the two heatmaps read as one consistent crowding language, not two
+  // different visualizations glued together.
+  corridorSegments.forEach(segment => {
+    const intensity = corridorHeatmapData[segment.id] ?? 0;
+    if (intensity === 0) return;
+    ctx.fillStyle = heatColor(intensity);
+    ctx.fillRect(segment.col_start, segment.row_start,
+                 segment.col_end - segment.col_start,
+                 segment.row_end - segment.row_start);
+    ctx.strokeStyle = heatColor(Math.min(1, intensity + 0.3));
+    ctx.lineWidth = dims.rows * 0.003;
+    ctx.strokeRect(segment.col_start, segment.row_start,
+                   segment.col_end - segment.col_start,
+                   segment.row_end - segment.row_start);
   });
 }
 

@@ -12,6 +12,141 @@
       31,
       44
     ],
+    "corridor_segments": [
+      {
+        "id": "3-corridor-00",
+        "col_start": 0,
+        "col_end": 25,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-01",
+        "col_start": 26,
+        "col_end": 51,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-02",
+        "col_start": 52,
+        "col_end": 77,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-03",
+        "col_start": 78,
+        "col_end": 103,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-04",
+        "col_start": 104,
+        "col_end": 129,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-05",
+        "col_start": 130,
+        "col_end": 155,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-06",
+        "col_start": 156,
+        "col_end": 181,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-07",
+        "col_start": 182,
+        "col_end": 207,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-08",
+        "col_start": 208,
+        "col_end": 233,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-09",
+        "col_start": 234,
+        "col_end": 259,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-10",
+        "col_start": 260,
+        "col_end": 285,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-11",
+        "col_start": 286,
+        "col_end": 311,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-12",
+        "col_start": 312,
+        "col_end": 337,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-13",
+        "col_start": 338,
+        "col_end": 363,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-14",
+        "col_start": 364,
+        "col_end": 389,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-15",
+        "col_start": 390,
+        "col_end": 415,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-16",
+        "col_start": 416,
+        "col_end": 441,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-17",
+        "col_start": 442,
+        "col_end": 467,
+        "row_start": 31,
+        "row_end": 44
+      },
+      {
+        "id": "3-corridor-18",
+        "col_start": 468,
+        "col_end": 476,
+        "row_start": 31,
+        "row_end": 44
+      }
+    ],
     "rooms": [
       {
         "id": "358",
@@ -99,6 +234,141 @@
     "corridor_rows": [
       39,
       52
+    ],
+    "corridor_segments": [
+      {
+        "id": "4-corridor-00",
+        "col_start": 0,
+        "col_end": 25,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-01",
+        "col_start": 26,
+        "col_end": 51,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-02",
+        "col_start": 52,
+        "col_end": 77,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-03",
+        "col_start": 78,
+        "col_end": 103,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-04",
+        "col_start": 104,
+        "col_end": 129,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-05",
+        "col_start": 130,
+        "col_end": 155,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-06",
+        "col_start": 156,
+        "col_end": 181,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-07",
+        "col_start": 182,
+        "col_end": 207,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-08",
+        "col_start": 208,
+        "col_end": 233,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-09",
+        "col_start": 234,
+        "col_end": 259,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-10",
+        "col_start": 260,
+        "col_end": 285,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-11",
+        "col_start": 286,
+        "col_end": 311,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-12",
+        "col_start": 312,
+        "col_end": 337,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-13",
+        "col_start": 338,
+        "col_end": 363,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-14",
+        "col_start": 364,
+        "col_end": 389,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-15",
+        "col_start": 390,
+        "col_end": 415,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-16",
+        "col_start": 416,
+        "col_end": 441,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-17",
+        "col_start": 442,
+        "col_end": 467,
+        "row_start": 39,
+        "row_end": 52
+      },
+      {
+        "id": "4-corridor-18",
+        "col_start": 468,
+        "col_end": 475,
+        "row_start": 39,
+        "row_end": 52
+      }
     ],
     "rooms": [
       {

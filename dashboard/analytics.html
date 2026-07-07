@@ -163,7 +163,7 @@
 
   <div class="card span-12">
     <div class="card-label">
-      <span>Store-traffic heatmap</span>
+      <span>Store &amp; corridor heatmap</span>
       <span class="hint">last 60 min, tinted by relative visit intensity</span>
     </div>
     <div class="heatmap-grid" id="heatmapGrid"><div class="empty">Loading floor plans…</div></div>
@@ -454,16 +454,34 @@ async function loadHeatmaps(){
     ctx.fillStyle = '#0E2A3D';
     ctx.fillRect(0, 0, dims.cols, dims.rows);
 
-    let items = [];
+    let roomItems = [];
+    let corridorItems = [];
     try {
-      const res = await fetch(`${API_BASE}/analytics/heatmap?floor=${floor}&minutes=60`);
-      const data = await res.json();
-      items = data.items || [];
+      const [roomRes, corridorRes] = await Promise.all([
+        fetch(`${API_BASE}/analytics/heatmap?floor=${floor}&minutes=60`),
+        fetch(`${API_BASE}/analytics/heatmap/corridor?floor=${floor}&minutes=60`),
+      ]);
+      const roomData = await roomRes.json();
+      const corridorData = await corridorRes.json();
+      roomItems = roomData.items || [];
+      corridorItems = corridorData.items || [];
     } catch { /* leave tile blank below */ }
 
     const intensityByRoom = {};
-    items.forEach(i => { intensityByRoom[i.room_id] = i.intensity; });
-    const hasData = items.some(i => i.intensity > 0);
+    roomItems.forEach(i => { intensityByRoom[i.room_id] = i.intensity; });
+    const intensityBySegment = {};
+    corridorItems.forEach(i => { intensityBySegment[i.corridor_segment_id] = i.intensity; });
+    const hasData = roomItems.some(i => i.intensity > 0) || corridorItems.some(i => i.intensity > 0);
+
+    // Corridor tiles first (the corridor's own floor surface), rooms drawn
+    // on top with their outline — the two bands never actually overlap
+    // (rooms sit below the corridor row range), so this is purely about
+    // keeping the room outlines crisp on top.
+    (dims.corridor_segments || []).forEach(segment => {
+      const intensity = intensityBySegment[segment.id] ?? 0;
+      ctx.fillStyle = intensity > 0 ? heatColor(intensity) : 'rgba(45,212,167,0.04)';
+      ctx.fillRect(segment.col_start, segment.row_start, segment.col_end - segment.col_start, segment.row_end - segment.row_start);
+    });
 
     (dims.rooms || []).forEach(room => {
       const intensity = intensityByRoom[room.id] ?? 0;

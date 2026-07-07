@@ -20,7 +20,8 @@ against a plan the project moved away from.
 |---|---|---|
 | Where is everyone right now? | **`WS /ws/live`** (FastAPI, Redis-backed) | Sub-second, event-driven pushes, always current |
 | Is a room currently crowded? | **`WS /ws/live`** (`"alert"` messages) + **`GET /alerts/active`** | Same live pipeline; REST version for a point-in-time read |
-| Show me the heatmap for today | **`GET /analytics/heatmap`** | Historical range query — latency is acceptable |
+| Show me the store heatmap for today | **`GET /analytics/heatmap`** | Historical range query — latency is acceptable |
+| Show me the corridor crowding heatmap | **`GET /analytics/heatmap/corridor`** | Same idea, `corridor_visits` instead of `room_visits` |
 | Device last seen / battery | **`GET /live/status/{device_id}`** or `/ws/live` | Redis, TTL-expired automatically if the device goes stale |
 | Navigation history for a device | **`GET /history/device/{device_id}`** | Persistent record, TimescaleDB |
 | Floor occupancy over time | **`GET /analytics/floor/{floor}`** | `crowd_analytics` continuous aggregate |
@@ -123,7 +124,7 @@ see `MQTT_CONTRACT.md`.
 | Endpoint | Returns | Source |
 |---|---|---|
 | `GET /health` | MQTT/Redis/Postgres connectivity | Live |
-| `GET /floors` | Floor dimensions, image path, room directory, `meters_per_cell` | `server/floors.json` |
+| `GET /floors` | Floor dimensions, image path, room directory, `corridor_segments`, `meters_per_cell` | `server/floors.json` |
 | `GET /rooms?floor=` | Room id/name/bounding box | `server/floors.json` |
 | `GET /live/positions` | Every active device's current position | Redis (same data as the WS snapshot) |
 | `GET /live/status/{device_id}` | Latest heartbeat for one device | Redis |
@@ -132,6 +133,7 @@ see `MQTT_CONTRACT.md`.
 | `GET /analytics/floor/{floor}?minutes=` | 5-min-bucketed occupancy time series | `crowd_analytics` |
 | `GET /analytics/rooms?floor=&minutes=&limit=` | Per-room visit counts, ranked | `room_visits` |
 | `GET /analytics/heatmap?floor=&minutes=` | Per-room intensity, normalized 0–1 | `room_visits` |
+| `GET /analytics/heatmap/corridor?floor=&minutes=` | Per-corridor-segment intensity, normalized 0–1 — tints the corridor's own floor surface, not the shops beside it | `corridor_visits` |
 
 Poll the `/analytics/*` endpoints for historical views. Never poll
 `/live/positions` on a timer for the live map — that's what `/ws/live` is
