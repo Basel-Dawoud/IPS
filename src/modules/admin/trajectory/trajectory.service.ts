@@ -135,7 +135,7 @@ const buildAnchors = (walk: {
  */
 const interpolateAtTime = (
   anchors: LabelAnchor[],
-  t: number
+  t: number,
 ): { x: number; y: number } => {
   if (anchors.length === 0) return { x: 0, y: 0 };
   const first = anchors[0];
@@ -187,7 +187,7 @@ export const createSession = async (data: CreateTrajectorySessionInput) => {
 export const listSessions = async (
   buildingId?: string,
   floorLevel?: number,
-  status?: string
+  status?: string,
 ): Promise<TrajectorySessionWithStats[]> => {
   const where: any = {};
   if (buildingId) where.buildingId = buildingId;
@@ -237,7 +237,12 @@ export const getSessionById = async (id: string) => {
           deviceModel: true,
           createdAt: true,
           _count: {
-            select: { steps: true, imuSamples: true, bleReadings: true, wifiReadings: true },
+            select: {
+              steps: true,
+              imuSamples: true,
+              bleReadings: true,
+              wifiReadings: true,
+            },
           },
         },
         orderBy: { createdAt: "asc" },
@@ -293,7 +298,9 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
     throw Object.assign(new Error("Trajectory session not found"), { status: 404 });
   }
   if (session.status === "ARCHIVED") {
-    throw Object.assign(new Error("Cannot add walks to archived session"), { status: 400 });
+    throw Object.assign(new Error("Cannot add walks to archived session"), {
+      status: 400,
+    });
   }
 
   // Only accept BLE readings from beacons registered to this building — a
@@ -305,7 +312,7 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
     select: { beaconUid: true },
   });
   const allowedUids = new Set(
-    registeredBeacons.map((b: { beaconUid: string }) => b.beaconUid.toLowerCase())
+    registeredBeacons.map((b: { beaconUid: string }) => b.beaconUid.toLowerCase()),
   );
 
   let walksCreated = 0;
@@ -334,147 +341,152 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
     // B2: ground-truth polyline through start → checkpoints → end.
     const anchors = buildAnchors(walk);
 
-    await prisma.$transaction(async (tx: any) => {
-      const walkRow = await tx.trajectoryWalk.create({
-        data: {
-          sessionId: session.id,
-          buildingId: session.buildingId,
-          floorLevel: session.floorLevel,
-          startX: walk.startX,
-          startY: walk.startY,
-          endX: walk.endX,
-          endY: walk.endY,
-          startedAt: new Date(walk.startedAt),
-          endedAt: new Date(walk.endedAt),
-          totalSteps: walk.totalSteps,
-          deviceModel: data.deviceModel || session.deviceModel,
-          clientId: walk.clientId ?? null,
-          clockEpochMs: walk.clockEpochMs ?? null,
-          imuRateHz: walk.imuRateHz ?? null,
-          magCalibrated: walk.magCalibrated ?? null,
-        },
-      });
-
-      if (walk.checkpoints && walk.checkpoints.length > 0) {
-        const cpRows = walk.checkpoints.map((c) => ({
-          walkId: walkRow.id,
-          seq: c.seq,
-          x: c.x,
-          y: c.y,
-          tMs: c.tMs,
-          capturedAt: new Date(c.capturedAt),
-        }));
-        for (const chunk of chunked(cpRows)) {
-          await tx.trajectoryCheckpoint.createMany({ data: chunk });
-        }
-        checkpointsCreated += cpRows.length;
-      }
-
-      if (walk.pauses && walk.pauses.length > 0) {
-        const pauseRows = walk.pauses.map((p) => ({
-          walkId: walkRow.id,
-          seq: p.seq,
-          pauseTMs: p.pauseTMs,
-          resumeTMs: p.resumeTMs ?? null,
-        }));
-        for (const chunk of chunked(pauseRows)) {
-          await tx.trajectoryPauseEvent.createMany({ data: chunk });
-        }
-        pausesCreated += pauseRows.length;
-      }
-
-      if (walk.steps.length > 0) {
-        const stepRows = walk.steps.map((s) => {
-          const pos = interpolateAtTime(anchors, toEpochMs(s.capturedAt));
-          return {
-            walkId: walkRow.id,
-            stepIndex: s.stepIndex,
-            capturedAt: new Date(s.capturedAt),
-            tMs: s.tMs ?? null,
-            headingRad: s.headingRad,
-            compassDeg: s.compassDeg ?? null,
-            interpolatedX: pos.x,
-            interpolatedY: pos.y,
-          };
+    await prisma.$transaction(
+      async (tx: any) => {
+        const walkRow = await tx.trajectoryWalk.create({
+          data: {
+            sessionId: session.id,
+            buildingId: session.buildingId,
+            floorLevel: session.floorLevel,
+            startX: walk.startX,
+            startY: walk.startY,
+            endX: walk.endX,
+            endY: walk.endY,
+            startedAt: new Date(walk.startedAt),
+            endedAt: new Date(walk.endedAt),
+            totalSteps: walk.totalSteps,
+            deviceModel: data.deviceModel || session.deviceModel,
+            clientId: walk.clientId ?? null,
+            clockEpochMs: walk.clockEpochMs ?? null,
+            imuRateHz: walk.imuRateHz ?? null,
+            magCalibrated: walk.magCalibrated ?? null,
+          },
         });
-        for (const chunk of chunked(stepRows)) {
-          await tx.trajectoryStepEvent.createMany({ data: chunk });
-        }
-        stepsCreated += stepRows.length;
-      }
 
-      if (walk.imu.length > 0) {
-        const imuRows = walk.imu.map((r) => ({
-          walkId: walkRow.id,
-          capturedAt: new Date(r.capturedAt),
-          tMs: r.tMs ?? null,
-          gyroX: r.gyroX ?? null,
-          gyroY: r.gyroY ?? null,
-          gyroZ: r.gyroZ ?? null,
-          accelX: r.accelX ?? null,
-          accelY: r.accelY ?? null,
-          accelZ: r.accelZ ?? null,
-          userAccelX: r.userAccelX ?? null,
-          userAccelY: r.userAccelY ?? null,
-          userAccelZ: r.userAccelZ ?? null,
-          magX: r.magX ?? null,
-          magY: r.magY ?? null,
-          magZ: r.magZ ?? null,
-          pitch: r.pitch ?? null,
-          roll: r.roll ?? null,
-          yaw: r.yaw ?? null,
-          pressure: r.pressure ?? null,
-          relativeAltitude: r.relativeAltitude ?? null,
-          vertAccel: r.vertAccel ?? null,
-          gaitVerticality: r.gaitVerticality ?? null,
-          gaitEnergy: r.gaitEnergy ?? null,
-          gaitIsWalking: r.gaitIsWalking ?? null,
-          gaitAmplitude: r.gaitAmplitude ?? null,
-          compassDeg: r.compassDeg ?? null,
-          compassAccuracyDeg: r.compassAccuracyDeg ?? null,
-        }));
-        for (const chunk of chunked(imuRows)) {
-          await tx.trajectoryImuSample.createMany({ data: chunk });
+        if (walk.checkpoints && walk.checkpoints.length > 0) {
+          const cpRows = walk.checkpoints.map((c) => ({
+            walkId: walkRow.id,
+            seq: c.seq,
+            x: c.x,
+            y: c.y,
+            tMs: c.tMs,
+            capturedAt: new Date(c.capturedAt),
+          }));
+          for (const chunk of chunked(cpRows)) {
+            await tx.trajectoryCheckpoint.createMany({ data: chunk });
+          }
+          checkpointsCreated += cpRows.length;
         }
-        imuSamplesCreated += imuRows.length;
-      }
 
-      if (walk.ble.length > 0) {
-        const acceptedBle = walk.ble.filter((r) =>
-          allowedUids.has(r.beaconUid.toLowerCase())
-        );
-        bleReadingsDroppedUnknownBeacon += walk.ble.length - acceptedBle.length;
-        const bleRows = acceptedBle.map((r) => ({
-          walkId: walkRow.id,
-          capturedAt: new Date(r.capturedAt),
-          tMs: r.tMs ?? null,
-          beaconUid: r.beaconUid,
-          rssi: r.rssi,
-        }));
-        for (const chunk of chunked(bleRows)) {
-          await tx.trajectoryBleReading.createMany({ data: chunk });
+        if (walk.pauses && walk.pauses.length > 0) {
+          const pauseRows = walk.pauses.map((p) => ({
+            walkId: walkRow.id,
+            seq: p.seq,
+            pauseTMs: p.pauseTMs,
+            resumeTMs: p.resumeTMs ?? null,
+          }));
+          for (const chunk of chunked(pauseRows)) {
+            await tx.trajectoryPauseEvent.createMany({ data: chunk });
+          }
+          pausesCreated += pauseRows.length;
         }
-        bleReadingsCreated += bleRows.length;
-      }
 
-      if (walk.wifi && walk.wifi.length > 0) {
-        const wifiRows = walk.wifi.map((r) => ({
-          walkId: walkRow.id,
-          capturedAt: new Date(r.capturedAt),
-          tMs: r.tMs ?? null,
-          bssid: r.bssid,
-          ssid: r.ssid ?? null,
-          rssi: r.rssi,
-          frequencyMhz: r.frequencyMhz ?? null,
-        }));
-        for (const chunk of chunked(wifiRows)) {
-          await tx.trajectoryWifiReading.createMany({ data: chunk });
+        if (walk.steps.length > 0) {
+          const stepRows = walk.steps.map((s) => {
+            const pos = interpolateAtTime(anchors, toEpochMs(s.capturedAt));
+            return {
+              walkId: walkRow.id,
+              stepIndex: s.stepIndex,
+              capturedAt: new Date(s.capturedAt),
+              tMs: s.tMs ?? null,
+              headingRad: s.headingRad,
+              compassDeg: s.compassDeg ?? null,
+              interpolatedX: pos.x,
+              interpolatedY: pos.y,
+            };
+          });
+          for (const chunk of chunked(stepRows)) {
+            await tx.trajectoryStepEvent.createMany({ data: chunk });
+          }
+          stepsCreated += stepRows.length;
         }
-        wifiReadingsCreated += wifiRows.length;
-      }
 
-      walksCreated++;
-    });
+        if (walk.imu.length > 0) {
+          const imuRows = walk.imu.map((r) => ({
+            walkId: walkRow.id,
+            capturedAt: new Date(r.capturedAt),
+            tMs: r.tMs ?? null,
+            gyroX: r.gyroX ?? null,
+            gyroY: r.gyroY ?? null,
+            gyroZ: r.gyroZ ?? null,
+            accelX: r.accelX ?? null,
+            accelY: r.accelY ?? null,
+            accelZ: r.accelZ ?? null,
+            userAccelX: r.userAccelX ?? null,
+            userAccelY: r.userAccelY ?? null,
+            userAccelZ: r.userAccelZ ?? null,
+            magX: r.magX ?? null,
+            magY: r.magY ?? null,
+            magZ: r.magZ ?? null,
+            pitch: r.pitch ?? null,
+            roll: r.roll ?? null,
+            yaw: r.yaw ?? null,
+            pressure: r.pressure ?? null,
+            relativeAltitude: r.relativeAltitude ?? null,
+            vertAccel: r.vertAccel ?? null,
+            gaitVerticality: r.gaitVerticality ?? null,
+            gaitEnergy: r.gaitEnergy ?? null,
+            gaitIsWalking: r.gaitIsWalking ?? null,
+            gaitAmplitude: r.gaitAmplitude ?? null,
+            compassDeg: r.compassDeg ?? null,
+            compassAccuracyDeg: r.compassAccuracyDeg ?? null,
+          }));
+          for (const chunk of chunked(imuRows)) {
+            await tx.trajectoryImuSample.createMany({ data: chunk });
+          }
+          imuSamplesCreated += imuRows.length;
+        }
+
+        if (walk.ble.length > 0) {
+          const acceptedBle = walk.ble.filter((r) =>
+            allowedUids.has(r.beaconUid.toLowerCase()),
+          );
+          bleReadingsDroppedUnknownBeacon += walk.ble.length - acceptedBle.length;
+          const bleRows = acceptedBle.map((r) => ({
+            walkId: walkRow.id,
+            capturedAt: new Date(r.capturedAt),
+            tMs: r.tMs ?? null,
+            beaconUid: r.beaconUid,
+            rssi: r.rssi,
+          }));
+          for (const chunk of chunked(bleRows)) {
+            await tx.trajectoryBleReading.createMany({ data: chunk });
+          }
+          bleReadingsCreated += bleRows.length;
+        }
+
+        if (walk.wifi && walk.wifi.length > 0) {
+          const wifiRows = walk.wifi.map((r) => ({
+            walkId: walkRow.id,
+            capturedAt: new Date(r.capturedAt),
+            tMs: r.tMs ?? null,
+            bssid: r.bssid,
+            ssid: r.ssid ?? null,
+            rssi: r.rssi,
+            frequencyMhz: r.frequencyMhz ?? null,
+          }));
+          for (const chunk of chunked(wifiRows)) {
+            await tx.trajectoryWifiReading.createMany({ data: chunk });
+          }
+          wifiReadingsCreated += wifiRows.length;
+        }
+
+        walksCreated++;
+      },
+      {
+        timeout: 120000, // 120 seconds
+      },
+    );
   }
 
   return {
@@ -498,7 +510,7 @@ export const uploadWalks = async (data: UploadWalksInput): Promise<UploadWalksRe
 export const exportSession = async (
   sessionId: string,
   walkCursor?: string,
-  walkLimit = 25
+  walkLimit = 25,
 ) => {
   const session = await prisma.trajectorySession.findUnique({
     where: { id: sessionId },
@@ -567,7 +579,7 @@ interface ReplayEvent {
 export const replaySession = async (
   sessionId: string,
   walkCursor?: string,
-  walkLimit = 25
+  walkLimit = 25,
 ) => {
   const session = await prisma.trajectorySession.findUnique({
     where: { id: sessionId },
@@ -614,7 +626,11 @@ export const replaySession = async (
         type: "step",
         x: pos.x,
         y: pos.y,
-        payload: { stepIndex: s.stepIndex, headingRad: s.headingRad, compassDeg: s.compassDeg },
+        payload: {
+          stepIndex: s.stepIndex,
+          headingRad: s.headingRad,
+          compassDeg: s.compassDeg,
+        },
       });
     }
 
@@ -626,18 +642,32 @@ export const replaySession = async (
         x: pos.x,
         y: pos.y,
         payload: {
-          gyroX: r.gyroX, gyroY: r.gyroY, gyroZ: r.gyroZ,
-          accelX: r.accelX, accelY: r.accelY, accelZ: r.accelZ,
-          userAccelX: r.userAccelX, userAccelY: r.userAccelY, userAccelZ: r.userAccelZ,
-          magX: r.magX, magY: r.magY, magZ: r.magZ,
-          pitch: r.pitch, roll: r.roll, yaw: r.yaw,
-          pressure: r.pressure, relativeAltitude: r.relativeAltitude,
+          gyroX: r.gyroX,
+          gyroY: r.gyroY,
+          gyroZ: r.gyroZ,
+          accelX: r.accelX,
+          accelY: r.accelY,
+          accelZ: r.accelZ,
+          userAccelX: r.userAccelX,
+          userAccelY: r.userAccelY,
+          userAccelZ: r.userAccelZ,
+          magX: r.magX,
+          magY: r.magY,
+          magZ: r.magZ,
+          pitch: r.pitch,
+          roll: r.roll,
+          yaw: r.yaw,
+          pressure: r.pressure,
+          relativeAltitude: r.relativeAltitude,
           // On-device gait state (null on legacy rows recorded before this).
-          vertAccel: r.vertAccel, gaitVerticality: r.gaitVerticality,
-          gaitEnergy: r.gaitEnergy, gaitIsWalking: r.gaitIsWalking,
+          vertAccel: r.vertAccel,
+          gaitVerticality: r.gaitVerticality,
+          gaitEnergy: r.gaitEnergy,
+          gaitIsWalking: r.gaitIsWalking,
           gaitAmplitude: r.gaitAmplitude,
           // Absolute OS-fused compass (null on legacy rows).
-          compassDeg: r.compassDeg, compassAccuracyDeg: r.compassAccuracyDeg,
+          compassDeg: r.compassDeg,
+          compassAccuracyDeg: r.compassAccuracyDeg,
         },
       });
     }
@@ -660,7 +690,12 @@ export const replaySession = async (
         type: "wifi",
         x: pos.x,
         y: pos.y,
-        payload: { bssid: r.bssid, ssid: r.ssid, rssi: r.rssi, frequencyMhz: r.frequencyMhz },
+        payload: {
+          bssid: r.bssid,
+          ssid: r.ssid,
+          rssi: r.rssi,
+          frequencyMhz: r.frequencyMhz,
+        },
       });
     }
 

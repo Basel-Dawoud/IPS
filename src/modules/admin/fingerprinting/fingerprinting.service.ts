@@ -243,6 +243,8 @@ export const uploadFingerprints = async (data: BatchFingerprintInput) => {
         totalFingerprints++;
       }
     }
+  }, {
+    timeout: 60000 // 60 seconds (default is 5000 ms)
   });
 
   return {

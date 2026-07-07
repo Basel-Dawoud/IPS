@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "TrajectoryStepEvent" ADD COLUMN IF NOT EXISTS "compassDeg" DOUBLE PRECISION;
+
+-- AlterTable
+ALTER TABLE "TrajectoryImuSample" ADD COLUMN IF NOT EXISTS "compassDeg" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "compassAccuracyDeg" DOUBLE PRECISION;
