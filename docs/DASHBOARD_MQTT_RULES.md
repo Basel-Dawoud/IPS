@@ -169,12 +169,16 @@ ips/+/device/+/alert      ← backend only
   "y":           7.2,
   "accuracy":    1.8,
   "motion":      "walking",
-  "ts":          1710000000
+  "ts":          1710000000,
+  "units":       "meters"
 }
 ```
 
 `room_id` is nullable — a device in the corridor between rooms won't have
-one. `ts` is seconds; multiply by 1000 for a JavaScript `Date`.
+one. `ts` is seconds; multiply by 1000 for a JavaScript `Date`. `x`/`y` are
+real meters relative to the floor's origin — the same `meters_per_cell`
+calibration in `GET /floors` converts them to grid cells for drawing (see
+`metersToCell()` in `index.html`), so don't re-scale them client-side.
 
 ---
 

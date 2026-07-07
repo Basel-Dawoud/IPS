@@ -276,10 +276,25 @@ Stair locations are configured per floor by column (`STAIRS` dict) and
 resolved to the nearest actual walkable `value == 2` cell at runtime, so a
 floor-plan regeneration doesn't silently break the route.
 
-Each position payload carries the real grid cell (`grid_row`/`grid_col`),
-a small jittered offset so dots don't look robotically snapped to a grid,
-a jittered `accuracy`, the nearest `room_id` (looked up from the room
-directory by column), and a `motion` field (`walking`/`stationary`).
+**Movement is calibrated to real walking speed, not one grid cell per publish
+tick.** Each floor's `meters_per_cell` (see §7a below) turns `WALK_SPEED_MPS`
+into a real distance covered per tick; on this grid (~0.195 m/cell) that's
+several whole-cell hops per 0.5s tick, plus a sub-cell fractional lead-in
+toward the next queued cell so the reported position moves smoothly rather
+than only snapping between cell centers. A persistent per-device progress
+accumulator carries fractional budget across ticks, so a slower speed or a
+coarser future grid doesn't lose progress between ticks — it just takes a
+few more of them to bank a whole cell. See `SimulatedDevice.step_position()`'s
+docstring for the exact mechanism.
+
+Each position payload carries the real grid cell (`grid_row`/`grid_col`, the
+*last whole cell* reached — used for zone/room lookups), a small jittered
+offset in real meters (`POSITION_JITTER_METERS`) so dots don't look
+perfectly snapped to a path, a jittered `accuracy` in real meters, the
+nearest `room_id` (looked up from the room directory by column), a `motion`
+field (`walking`/`stationary`), and `x`/`y` in real meters (`"units":
+"meters"`) — the same convention `GET /floors`'s `meters_per_cell`/`origin`
+already used on the dashboard side.
 
 ### Config (environment variables)
 
@@ -293,8 +308,16 @@ directory by column), and a `motion` field (`walking`/`stationary`).
 | `STATUS_INTERVAL_SECONDS` | `30` | How often a heartbeat/battery status is published |
 | `CORRIDOR_ONLY` | `true` | Confine movement to the corridor band only; `false` allows the whole walkable floor (debugging) |
 | `WALKABLE_VALUES` | `0,2,3` | Which grid values count as walkable |
-| `TURN_PROBABILITY` | `0.18` | Chance of an "exploratory" random step instead of the shortest-path step, so movement doesn't look robotic |
-| `COORD_SCALE` | `1.0` | Grid-cell → published-unit scale factor |
+| `WALK_SPEED_MPS` | `1.2` | Real walking pace in meters/second — see §7a |
+| `WALK_SPEED_JITTER` | `0.15` | ± fraction of random per-tick speed variation, so pace doesn't feel metronomic |
+| `POSITION_JITTER_METERS` | `0.3` | Simulated sensor/fingerprinting noise, in real meters — independent of grid resolution |
+| `ACCURACY_METERS_MIN` / `ACCURACY_METERS_MAX` | `0.6` / `1.8` | Range for the self-reported `accuracy` field |
+
+`TURN_PROBABILITY` is still defined in `phone.py` but isn't read anywhere —
+a leftover from an earlier random-walk navigator, since replaced by the
+deterministic BFS-pathed one. `COORD_SCALE` has been removed: it was the
+"arbitrary grid jump" scale knob this section's calibration replaces: if
+you had it set in your `.env`, it's now a no-op.
 
 Run one simulated user:
 ```bash
@@ -304,6 +327,34 @@ Run a fleet for load testing:
 ```bash
 NUM_DEVICES=50 FLOORS=3,4 ./venv/bin/python phone.py
 ```
+
+---
+
+## 7a. Real-world calibration
+
+`tools/render_floor_maps.py` computes each floor's `meters_per_cell` from a
+measured building footprint (`REAL_FLOOR_LENGTH_METERS = 93.0`), dividing by
+that floor's column count. This is the single source of truth both the
+simulator and the dashboard read — nothing hardcodes a scale independently
+anymore.
+
+**A real, known limitation, not swept under the rug:** the two floor grids
+don't have identical pixel dimensions (floor 3 is 477×89, floor 4 is
+476×99), so calibrating off length alone means the row-count-implied width
+doesn't exactly match the measured `15.765m` on either floor (floor 3 comes
+out ~10% wide, floor 4 ~23% wide). A single `meters_per_cell` scalar can't
+make both axes exactly right on both floors at once unless the grids'
+aspect ratios matched the real footprint's aspect ratio precisely, and they
+don't quite. Length was chosen over width because a straight corridor run
+is the dimension most reliably measured on-site with one tape-measure pull;
+width of an irregular retail floor (varying room depths, doorway recesses)
+is more likely to already be an approximate figure. If you re-measure and
+find the opposite is true for your site, swap which axis
+`real_meters_per_cell()` divides by.
+
+Re-run `tools/render_floor_maps.py` any time the real footprint measurement
+changes, or hand-edit `meters_per_cell` directly in `server/floors.json` for
+a one-off override — either survives the next regeneration (see §10).
 
 ---
 
@@ -409,10 +460,10 @@ already set), and `db/02-rooms.sql` — all from the same detected room
 geometry, so the SVG labels, the dashboard's room lookup, and the database
 seed can never disagree with each other.
 
-`meters_per_cell` starts `null`/uncalibrated until someone measures a known
-real-world distance against the grid and edits `server/floors.json`
-directly; until then the dashboard shows a small on-screen note and treats
-1 grid cell as 1 published unit.
+`meters_per_cell` is computed automatically from `REAL_FLOOR_LENGTH_METERS`
+(see §7a) — no manual measurement-and-edit step needed for a fresh
+regeneration. A hand-edited override in `server/floors.json` (anything other
+than `null` or the old `1.0` placeholder) is still preserved across re-renders.
 
 ---
 
@@ -441,8 +492,13 @@ directly; until then the dashboard shows a small on-screen note and treats
 
 ## 13. Known limitations
 
-- `meters_per_cell` calibration is manual — there's no automatic real-world
-  distance measurement, so out of the box positions are in grid-cell units.
+- `meters_per_cell` is calibrated from a single measured length (see §7a),
+  not independently on both axes — floor 3's implied width comes out ~10%
+  over the measured `15.765m`, floor 4's ~23% over, because the two grids'
+  pixel aspect ratios don't quite match the real footprint's. Re-measuring
+  and confirming which axis is more trustworthy for your specific site
+  would resolve this; the current calibration is a documented, reasoned
+  default, not a guess passed off as exact.
 - Dwell-time analytics are a bucket-based approximation (5-minute
   `room_visits` windows), not per-visit session reconstruction — good
   enough for a demo, not a precise stopwatch.

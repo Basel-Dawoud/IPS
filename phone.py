@@ -6,21 +6,34 @@ Map-aware MQTT simulator for the IPS project.
 
 This version:
   • Loads the real floor grids from maps/floor_3_grid.npy and maps/floor_4_grid.npy
-  • Loads server/floors.json for each floor's corridor_rows and room directory
+  • Loads server/floors.json for each floor's corridor_rows, room directory,
+    and meters_per_cell — the same calibration the dashboard uses to draw
+    positions, so a published (x, y) means the same real-world distance on
+    both ends of the pipeline
   • Confines devices to the main corridor band only — never inside a room —
     matching real foot traffic (CORRIDOR_ONLY=true by default)
   • Spawns devices only on walkable corridor cells
   • Moves them through a deterministic route:
       floor 3 -> right stairs -> floor 4 -> left stairs -> floor 3 -> repeat
   • Uses the blue stair cells for floor transitions
-  • Publishes grid-aware coordinates (cell centers)
-  • Keeps the same MQTT topics / ACK listener / status heartbeats / fleet mode
+  • Walks at a real, configurable pace (WALK_SPEED_MPS) rather than one grid
+    cell per publish tick — see step_position()'s docstring for how a
+    per-tick meter budget turns into whole-cell hops plus a sub-cell
+    fractional lead-in, so speed stays realistic regardless of how coarse
+    or fine a given floor's grid resolution happens to be
+  • Publishes coordinates in real meters (relative to each floor's origin),
+    not raw grid indices
 
 Notes:
   • Set CORRIDOR_ONLY=false to fall back to free movement across every
     walkable cell on the floor (useful for debugging).
   • By default, values 0, 2, and 3 are treated as walkable; 1 is treated as
     a wall. Override with WALKABLE_VALUES if the map semantics change later.
+  • TURN_PROBABILITY is defined below but not currently read anywhere — a
+    leftover from an earlier random-walk navigator, since replaced by the
+    deterministic BFS-pathed FloorNavigator. Left in place rather than
+    removed here since route diversity is a separate concern from this
+    change (real-meter speed calibration); harmless either way today.
 """
 
 from __future__ import annotations
@@ -75,10 +88,23 @@ JITTER_SECONDS = float(os.getenv("JITTER_SECONDS", "0.10"))
 STATS_INTERVAL_SECONDS = float(os.getenv("STATS_INTERVAL_SECONDS", "5"))
 RECONNECT_DELAY_SECONDS = float(os.getenv("RECONNECT_DELAY_SECONDS", "5"))
 
-# How positions are published:
-#   x = col + 0.5
-#   y = row + 0.5
-COORD_SCALE = float(os.getenv("COORD_SCALE", "1.0"))
+# How fast the simulated person walks, in real meters/second. 1.2 m/s is a
+# commonly-cited average adult indoor walking pace (browsing/shopping context
+# tends toward the slower end of the general 0.7-1.8 m/s range seen in
+# pedestrian-flow studies; a purposeful commuter pace would be faster).
+# WALK_SPEED_JITTER adds per-tick variation so the pace doesn't feel
+# metronomic — real people don't walk at a perfectly constant speed.
+WALK_SPEED_MPS = float(os.getenv("WALK_SPEED_MPS", "1.2"))
+WALK_SPEED_JITTER = float(os.getenv("WALK_SPEED_JITTER", "0.15"))  # +/- fraction
+
+# Simulated sensor/fingerprinting noise, in real meters — independent of grid
+# cell size (previously this was expressed as a fraction of a grid cell,
+# which meant the *physical* amount of noise silently changed any time the
+# grid resolution changed; expressing it directly in meters keeps it meaning
+# the same thing regardless of map resolution).
+POSITION_JITTER_METERS = float(os.getenv("POSITION_JITTER_METERS", "0.3"))
+ACCURACY_METERS_MIN = float(os.getenv("ACCURACY_METERS_MIN", "0.6"))
+ACCURACY_METERS_MAX = float(os.getenv("ACCURACY_METERS_MAX", "1.8"))
 
 # Floor semantics:
 #   1 = wall / blocked
@@ -168,7 +194,15 @@ def parse_floor_maps() -> dict[int, "FloorMap"]:
         corridor_rows = floor_cfg.get("corridor_rows")
         corridor_rows = tuple(corridor_rows) if corridor_rows else None
         rooms = floor_cfg.get("rooms", [])
-        return FloorMap(floor, path, corridor_rows=corridor_rows, rooms=rooms)
+        meters_per_cell = floor_cfg.get("meters_per_cell")
+        origin = floor_cfg.get("origin")
+        return FloorMap(
+            floor, path,
+            corridor_rows=corridor_rows,
+            rooms=rooms,
+            meters_per_cell=meters_per_cell,
+            origin=origin,
+        )
 
     for floor in sorted(set(REQUESTED_FLOORS)):
         path = MAPS_DIR / f"floor_{floor}_grid.npy"
@@ -203,12 +237,27 @@ class FloorMap:
         grid_path: Path,
         corridor_rows: tuple[int, int] | None = None,
         rooms: list[dict] | None = None,
+        meters_per_cell: float | None = None,
+        origin: dict | None = None,
     ):
         self.floor = floor
         self.grid_path = grid_path
         self.grid = np.load(grid_path)
         self.rows, self.cols = self.grid.shape
         self.rooms = rooms or []
+
+        if meters_per_cell:
+            self.meters_per_cell = meters_per_cell
+        else:
+            print(
+                f"[WARN]  Floor {floor}: no meters_per_cell in floors.json — "
+                f"falling back to 1.0 (grid cell == 1 meter, almost certainly "
+                f"wrong). Run tools/render_floor_maps.py to calibrate."
+            )
+            self.meters_per_cell = 1.0
+        origin = origin or {}
+        self.origin_row = float(origin.get("row", 0))
+        self.origin_col = float(origin.get("col", 0))
 
         base_walkable = np.isin(self.grid, list(WALKABLE_VALUES))
 
@@ -238,7 +287,8 @@ class FloorMap:
             f"{self.rows}x{self.cols}, mode={mode}, "
             f"walkable={int(self.walkable_mask.sum())}, "
             f"primary_component={len(self.primary_cells)}, "
-            f"rooms={len(self.rooms)}"
+            f"rooms={len(self.rooms)}, "
+            f"meters_per_cell={self.meters_per_cell:.5f}"
         )
 
     def nearest_room_id(self, col: int) -> str | None:
@@ -527,6 +577,9 @@ class SimulatedDevice:
         self.floor_maps = floor_maps
         self.navigator = FloorNavigator(floor_maps, start_floor=3)
         self.battery = random.randint(55, 100)
+        # Fractional cells-of-progress toward the next queued path cell,
+        # carried across ticks — see step_position()'s docstring.
+        self._progress = 0.0
 
     @property
     def floor_map(self) -> FloorMap:
@@ -556,35 +609,83 @@ class SimulatedDevice:
 
     def step_position(self) -> tuple[dict, bool]:
         """
-        Advance one map-aware step and return the MQTT payload plus a moved flag.
+        Advance by a real distance this tick — WALK_SPEED_MPS * (tick
+        duration), converted through this floor's meters_per_cell — instead
+        of always hopping exactly one grid cell regardless of what that cell
+        physically represents. That old behavior is exactly the "arbitrary
+        grid jump" this replaces: once cells are calibrated to real meters
+        (~0.195m each here), one cell per 0.5s tick would be a ~0.4 m/s
+        crawl, and on a coarser grid the same logic could just as easily
+        sprint.
+
+        Mechanism: `_progress` accumulates fractional cells-of-budget each
+        tick and persists across ticks (so a slow speed / fine grid doesn't
+        lose progress between ticks — it just takes a few ticks to
+        accumulate a whole cell). Whenever it reaches >= 1.0, we consume a
+        real whole-cell hop via the navigator's existing BFS-pathed
+        advance() (unchanged — this still handles stairs, floor transitions,
+        and pausing exactly as before), possibly several in one tick on a
+        fine grid at a brisk pace. Whatever fractional budget is left over
+        (always < 1.0) is used to linearly interpolate the *reported*
+        position toward the next queued path cell, without actually
+        consuming it yet — so the published position moves smoothly between
+        whole-cell waypoints rather than only ever snapping to cell centers.
+
+        grid_row/grid_col/zone_id/room_id stay based on the last whole cell
+        reached (those are lookups that need an integer cell); x/y become
+        the continuous, sub-cell real-meter position.
         """
-        cell, moved = self.navigator.advance()
+        mpc = self.floor_map.meters_per_cell
+        speed = WALK_SPEED_MPS * random.uniform(1 - WALK_SPEED_JITTER, 1 + WALK_SPEED_JITTER)
+        self._progress += (speed * POSITION_INTERVAL_SECONDS) / mpc
 
-        jitter_x = random.uniform(-0.30, 0.30)
-        jitter_y = random.uniform(-0.30, 0.30)
+        moved_any = False
+        last_cell = self.navigator.current
+        while self._progress >= 1.0:
+            prev_cell = self.navigator.current
+            cell, moved = self.navigator.advance()
+            if cell == prev_cell:
+                # Genuinely blocked this instant (mid-pause window, e.g. the
+                # 0.6s settle right after a floor transition) — stop, and
+                # cap the budget so a long pause doesn't release a big burst
+                # of hops the moment it ends.
+                self._progress = min(self._progress, 1.0)
+                break
+            last_cell = cell
+            self._progress -= 1.0
+            moved_any = moved_any or moved
 
-        x = (cell.col + 0.5 + jitter_x) * COORD_SCALE
-        y = (cell.row + 0.5 + jitter_y) * COORD_SCALE
+        next_cell = self.navigator.path[0] if self.navigator.path else None
+        if next_cell is not None and self._progress > 0:
+            frac_row = last_cell.row + (next_cell.row - last_cell.row) * self._progress
+            frac_col = last_cell.col + (next_cell.col - last_cell.col) * self._progress
+        else:
+            frac_row, frac_col = float(last_cell.row), float(last_cell.col)
 
-        accuracy = round(random.uniform(0.60, 1.80) * COORD_SCALE, 2)
+        jitter_row = random.uniform(-1, 1) * (POSITION_JITTER_METERS / mpc)
+        jitter_col = random.uniform(-1, 1) * (POSITION_JITTER_METERS / mpc)
+
+        x = (frac_col + jitter_col - self.floor_map.origin_col) * mpc
+        y = (frac_row + jitter_row - self.floor_map.origin_row) * mpc
+        accuracy = round(random.uniform(ACCURACY_METERS_MIN, ACCURACY_METERS_MAX), 2)
 
         payload = {
             "device_id": self.device_id,
             "building_id": BUILDING_ID,
             "floor": self.floor,
-            "zone_id": self.zone_id(cell.row, cell.col),
-            "room_id": self.floor_map.nearest_room_id(cell.col),
-            "grid_row": cell.row,
-            "grid_col": cell.col,
-            "map_value": self.floor_map.cell_value(cell.row, cell.col),
+            "zone_id": self.zone_id(last_cell.row, last_cell.col),
+            "room_id": self.floor_map.nearest_room_id(last_cell.col),
+            "grid_row": last_cell.row,
+            "grid_col": last_cell.col,
+            "map_value": self.floor_map.cell_value(last_cell.row, last_cell.col),
             "x": round(x, 2),
             "y": round(y, 2),
             "accuracy": accuracy,
-            "motion": "walking" if moved else "stationary",
+            "motion": "walking" if moved_any else "stationary",
             "ts": int(time.time()),
-            "units": "grid_cells",
+            "units": "meters",
         }
-        return payload, moved
+        return payload, moved_any
 
     def status_payload(self) -> dict:
         self.battery = max(5, self.battery - random.randint(0, 1))

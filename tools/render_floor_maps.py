@@ -45,6 +45,27 @@ ASSETS_DIR = os.path.join(BASE_DIR, "dashboard", "assets")
 FLOORS_JSON_PATH = os.path.join(BASE_DIR, "server", "floors.json")
 ROOMS_SQL_PATH = os.path.join(BASE_DIR, "db", "02-rooms.sql")
 
+# Real, physically-measured building footprint. Both floors share this
+# footprint (they're stacked levels of the same building), but the two
+# floor grids don't have identical pixel dimensions (floor 3 is 477x89,
+# floor 4 is 476x99) — a few extra rows/cols of margin baked into one grid
+# vs the other means a single meters_per_cell can't make BOTH axes exactly
+# correct on both floors simultaneously (a real, measured mismatch: see
+# docs/CALIBRATION.md for the exact numbers). We calibrate off LENGTH
+# (cols), not width (rows), because a straight corridor run is the
+# dimension most reliably measured on-site with a single tape-measure
+# pull, whereas "width" of an irregular retail floor (varying room depths,
+# doorway recesses) is more likely to be an approximate figure to begin
+# with. If you re-measure and find width is actually the more trustworthy
+# number for your site, swap which axis this divides by.
+REAL_FLOOR_LENGTH_METERS = 93.0
+REAL_FLOOR_WIDTH_METERS = 15.765
+
+
+def real_meters_per_cell(cols: int) -> float:
+    return REAL_FLOOR_LENGTH_METERS / cols
+
+
 # Devices walk only the corridor, which is grid-aligned (see phone.py), so
 # one grid cell == one published coordinate unit. This is not a physical
 # meters-per-cell calibration — it is set so the dashboard's existing
@@ -150,19 +171,18 @@ def main() -> None:
         png_path = os.path.join(ASSETS_DIR, f"floor_{floor}.png")
         render_png_preview(grid, png_path)
 
-        print(
-            f"Floor {floor}: {cols}x{rows} cells | "
-            f"corridor_rows={corridor_band} | rooms={len(rooms)} | "
-            f"wrote {svg_path}"
-        )
-
         existing = config.get(floor_key, {})
         # .get(key, default) only falls back when the key is ABSENT — but the
         # previous floors.json always had this key present with value null
-        # (uncalibrated). Treat "present but null" the same as "absent": fill
-        # in the default. A real prior calibration (non-null) is preserved.
+        # (uncalibrated) or the old 1.0 grid-cell placeholder. Treat both the
+        # same as "absent": fill in the real physical calibration. A
+        # deliberately hand-set calibration (anything other than null or the
+        # retired 1.0 placeholder) is preserved across re-renders.
         prior_mpc = existing.get("meters_per_cell")
-        meters_per_cell = prior_mpc if prior_mpc is not None else DEFAULT_UNITS_PER_CELL
+        if prior_mpc is None or prior_mpc == DEFAULT_UNITS_PER_CELL:
+            meters_per_cell = real_meters_per_cell(cols)
+        else:
+            meters_per_cell = prior_mpc
 
         config[floor_key] = {
             "cols": cols,
@@ -173,6 +193,16 @@ def main() -> None:
             "corridor_rows": list(corridor_band),
             "rooms": [room_to_dict(r) for r in rooms],
         }
+
+        implied_width = rows * meters_per_cell
+        print(
+            f"Floor {floor}: {cols}x{rows} cells | "
+            f"corridor_rows={corridor_band} | rooms={len(rooms)} | "
+            f"meters_per_cell={meters_per_cell:.5f} (calibrated to "
+            f"{REAL_FLOOR_LENGTH_METERS}m length) -> implied width "
+            f"{implied_width:.2f}m vs stated {REAL_FLOOR_WIDTH_METERS}m | "
+            f"wrote {svg_path}"
+        )
 
     with open(FLOORS_JSON_PATH, "w") as f:
         json.dump(config, f, indent=2)

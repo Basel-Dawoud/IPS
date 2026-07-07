@@ -3,7 +3,7 @@
     "cols": 477,
     "rows": 89,
     "image": "assets/floor_3.svg",
-    "meters_per_cell": 1.0,
+    "meters_per_cell": 0.1949685534591195,
     "origin": {
       "col": 0,
       "row": 0
@@ -91,7 +91,7 @@
     "cols": 476,
     "rows": 99,
     "image": "assets/floor_4.svg",
-    "meters_per_cell": 1.0,
+    "meters_per_cell": 0.1953781512605042,
     "origin": {
       "col": 0,
       "row": 0

@@ -1,8 +1,14 @@
-# Mobile App — MQTT Rules v1.1
+# Mobile App — MQTT Rules v1.2
 # IPS Project · Flutter / Kotlin Developer Guide
 
 This document tells you everything you need to implement MQTT in the mobile app.
 For the full engineering spec, see `MQTT_CONTRACT.md`.
+
+**v1.2 change:** position's retain flag here said `true`; `MQTT_CONTRACT.md`
+(the file that wins on conflicts) says `false` — live position state belongs
+in the server's Redis store, not replayed from the broker to a late
+subscriber. Fixed to match. Also added the `x`/`y` unit, which this doc
+never actually specified.
 
 ---
 
@@ -65,7 +71,13 @@ Replace `<building_id>` with `building1` and `<device_id>` with your stable ID.
 - `ts` = `System.currentTimeMillis() / 1000` (Kotlin) or `DateTime.now().millisecondsSinceEpoch ~/ 1000` (Flutter)
 - `zone_id` = from ML model output; omit if unknown
 - `floor`, `x`, `y`, `accuracy` = from ML model output
-- QoS: **0**, retain: **true**
+- `x`/`y` are in **real meters**, relative to the floor's origin (see
+  `GET /floors`'s `meters_per_cell`/`origin` for the same convention the
+  simulator and dashboard already share) — not raw grid indices or any
+  device-local unit. If your positioning model outputs something else
+  (e.g. normalized 0–1 coordinates), convert before publishing.
+- QoS: **0**, retain: **false** — this is live state, not something a late
+  subscriber should be replayed once you've moved on
 
 ### Status — every 30 seconds
 
