@@ -1,3 +1,19 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --color-brand: 0, 122, 255;
+  --color-brand-dark: 0, 86, 179;
+  --color-brand-light: 102, 176, 255;
+  --color-surface: 8, 18, 31;
+  --color-surface-variant: 17, 32, 51;
+  --color-secondary: 0, 229, 255;
+  --color-cyan: 0, 229, 255;
+  --color-purple: 92, 36, 255;
+  --color-navy: 2, 10, 18;
+  --color-background: 4, 11, 20;
+  --color-on-background: 226, 232, 240;
+  --color-error: 255, 75, 75;
+  --color-link: 10, 126, 164;
+}

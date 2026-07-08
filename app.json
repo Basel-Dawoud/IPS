@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "navimind",
-    "slug": "navimind",
+    "name": "Navimind",
+    "slug": "Navimind",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -9,7 +9,14 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.navimind.app",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Navimind uses Bluetooth to scan nearby beacons for indoor positioning.",
+        "NSMotionUsageDescription": "Navimind uses motion sensors to improve indoor positioning.",
+        "NSLocationWhenInUseUsageDescription": "Navimind uses the compass (which requires location access) to record your facing direction during trajectory collection.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +26,23 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_WIFI_STATE",
+        "CHANGE_WIFI_STATE",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "ACTIVITY_RECOGNITION",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "RECORD_AUDIO"
+      ],
+      "package": "com.navimind.app"
     },
     "web": {
       "output": "static",
@@ -27,6 +50,18 @@
     },
     "plugins": [
       "expo-router",
+      "expo-location",
+      "expo-sensors",
+      "./plugins/with-onnxruntime.js",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Navimind uses Bluetooth to detect indoor beacons for positioning."
+        }
+      ],
+      "./plugins/with-ble-scan-permission.js",
       [
         "expo-splash-screen",
         {
@@ -38,11 +73,29 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      "@react-native-google-signin/google-signin",
+      "expo-secure-store",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Navimind to access the microphone for voice commands.",
+          "speechRecognitionPermission": "Allow Navimind to use speech recognition.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
       ]
     ],
+    "assetBundlePatterns": ["assets/models/*"],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "apiUrl": "https://navimind.remonehab.cloud",
+      "eas": {
+        "projectId": "b2d6679b-f6a6-49c7-9422-ea923186f200"
+      }
+    },
+    "owner": "remooo"
   }
 }

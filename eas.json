@@ -1,0 +1,60 @@
+{
+  "cli": {
+    "version": ">= 19.0.8",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://navimind.remonehab.cloud/api",
+        "EXPO_PUBLIC_STATIC_URL": "https://navimind.remonehab.cloud",
+        "EXPO_PUBLIC_BLE_WINDOW_MS": "1100",
+        "EXPO_PUBLIC_INFERENCE_INTERVAL_MS": "1050",
+        "EXPO_PUBLIC_REMOTE_BYPASS": "true",
+        "EXPO_PUBLIC_POI_ARRIVE_THRESHOLD_METERS": "2.0",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "<YOUR_WEB_CLIENT_ID>.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "<YOUR_IOS_CLIENT_ID>.apps.googleusercontent.com"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://navimind.remonehab.cloud/api",
+        "EXPO_PUBLIC_STATIC_URL": "https://navimind.remonehab.cloud",
+        "EXPO_PUBLIC_BLE_WINDOW_MS": "1100",
+        "EXPO_PUBLIC_INFERENCE_INTERVAL_MS": "1050",
+        "EXPO_PUBLIC_REMOTE_BYPASS": "true",
+        "EXPO_PUBLIC_POI_ARRIVE_THRESHOLD_METERS": "2.0",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "<YOUR_WEB_CLIENT_ID>.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "<YOUR_IOS_CLIENT_ID>.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://navimind.remonehab.cloud/api",
+        "EXPO_PUBLIC_STATIC_URL": "https://navimind.remonehab.cloud",
+        "EXPO_PUBLIC_BLE_WINDOW_MS": "1100",
+        "EXPO_PUBLIC_INFERENCE_INTERVAL_MS": "1050",
+        "EXPO_PUBLIC_REMOTE_BYPASS": "false",
+        "EXPO_PUBLIC_POI_ARRIVE_THRESHOLD_METERS": "2.0",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "<YOUR_WEB_CLIENT_ID>.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "<YOUR_IOS_CLIENT_ID>.apps.googleusercontent.com"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

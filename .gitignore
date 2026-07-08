@@ -42,4 +42,5 @@ app-example
 /android
 .vscode
 .claude
+.env
 design/*
