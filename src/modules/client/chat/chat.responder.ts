@@ -21,11 +21,13 @@ export function getThanksResponse(lang: "en" | "ar"): string {
 
 export function getStoreInfoResponse(description: string, storeName: string, roomCode: string, lang: "en" | "ar"): string {
   const room = roomCode ? (lang === "ar" ? ` (غرفة ${roomCode})` : ` (room ${roomCode})`) : "";
-  const infoText = description || `${storeName}${room}`;
+  const header = `🏪 ${storeName}${room}`;
+  const descText = description ? `\n📝 ${description}` : "";
+  
   if (lang === "ar") {
-    return `${infoText}\n\nتحب أوصّلك هناك؟`;
+    return `${header}${descText}\n\nتحب أوصّلك هناك؟`;
   }
-  return `${infoText}\n\nWant me to guide you there?`;
+  return `${header}${descText}\n\nWant me to guide you there?`;
 }
 
 export function getProductLocationResponse(storeName: string, roomCode: string, lang: "en" | "ar"): string {

@@ -17,15 +17,21 @@ import { getRecommendations } from "../recommendation/recommendation.service";
  */
 export async function processMessage(input: ChatMessageInput, userId?: string): Promise<ChatReply> {
   const lang = detectLanguage(input.message);
+  console.log(`[chat.service] Incoming message to process: "${input.message}" (lang=${lang}, userId=${userId || 'guest'})`);
 
   try {
     const serviceReply = await callChatbotService(input, lang);
     if (serviceReply) {
+      console.log(`[chat.service] Successfully received reply from chatbot-service:`, JSON.stringify(serviceReply, null, 2));
       // The brain classified this turn as a recommendation request — answer it
       // from the backend's recommendation engine (it owns user history/ratings).
       if (serviceReply.handoff === "recommend") {
+        console.log(`[chat.service] Chatbot service requested handoff to recommendation engine.`);
         const recReply = await buildRecommendationsReply(input, userId, lang);
-        if (recReply) return recReply;
+        if (recReply) {
+          console.log(`[chat.service] Recommendation reply generated successfully:`, JSON.stringify(recReply, null, 2));
+          return recReply;
+        }
         return {
           reply:
             lang === "ar"
@@ -35,12 +41,17 @@ export async function processMessage(input: ChatMessageInput, userId?: string): 
         };
       }
       return serviceReply;
+    } else {
+      console.log(`[chat.service] Chatbot service returned null. Transitioning to local offline fallback.`);
     }
   } catch (err) {
-    console.warn("[chat.service] Chatbot service failed, using local fallback:", err);
+    console.error("[chat.service] Chatbot service threw an exception during execution:", err);
   }
 
-  return processMessageFallback(input, userId, lang);
+  console.log(`[chat.service] Executing local offline fallback rules for message: "${input.message}"`);
+  const fallbackResult = await processMessageFallback(input, userId, lang);
+  console.log(`[chat.service] Offline fallback generated reply:`, JSON.stringify(fallbackResult, null, 2));
+  return fallbackResult;
 }
 
 /**

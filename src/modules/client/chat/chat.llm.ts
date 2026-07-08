@@ -43,6 +43,7 @@ export async function callChatbotService(
   const makeRequest = async (poisPayload: any[] | null) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const hasPois = poisPayload !== null;
 
     try {
       const token = process.env.CHATBOT_SERVICE_TOKEN;
@@ -53,26 +54,47 @@ export async function callChatbotService(
         headers["X-Chatbot-Token"] = token;
       }
 
+      const requestBody = {
+        message: input.message,
+        buildingId: input.buildingId,
+        lang,
+        floorLevel: input.floorLevel,
+        pendingPoiId: input.lastSuggestedPoiId ?? null,
+        version,
+        pois: poisPayload,
+      };
+
+      console.log(`[chat.llm] Sending POST request to ${serviceUrl}/chat (hasPoisPayload=${hasPois})`);
+      console.log(`[chat.llm] Request payload:`, JSON.stringify(requestBody, null, 2));
+
       const response = await fetch(`${serviceUrl}/chat`, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          message: input.message,
-          buildingId: input.buildingId,
-          lang,
-          floorLevel: input.floorLevel,
-          pendingPoiId: input.lastSuggestedPoiId ?? null,
-          version,
-          pois: poisPayload,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
+
+      const responseText = await response.text();
+      console.log(`[chat.llm] Received status ${response.status} ${response.statusText}`);
+      console.log(`[chat.llm] Raw response text:`, responseText);
+
+      let responseJson = null;
+      try {
+        if (responseText) {
+          responseJson = JSON.parse(responseText);
+        }
+      } catch (err) {
+        console.warn(`[chat.llm] Failed to parse chatbot response as JSON:`, err);
+      }
 
       return {
         status: response.status,
         ok: response.ok,
-        json: response.ok || response.status === 409 ? await response.json() : null,
+        json: responseJson,
       };
+    } catch (e: any) {
+      console.error(`[chat.llm] Fetch request inside makeRequest failed:`, e);
+      throw e;
     } finally {
       clearTimeout(timeoutId);
     }
@@ -105,7 +127,7 @@ export async function callChatbotService(
     }
 
     if (!result.ok || !result.json) {
-      console.warn(`[chat.llm] Chatbot service returned status ${result.status}`);
+      console.warn(`[chat.llm] Chatbot service returned non-OK status (${result.status}) or empty JSON:`, result.json);
       return null;
     }
 
@@ -117,8 +139,11 @@ export async function callChatbotService(
       clearPending?: boolean | null;
     };
 
+    console.log(`[chat.llm] Parsed chatbot service response:`, JSON.stringify(data, null, 2));
+
     // A handoff turn intentionally has an empty reply — the backend answers it.
     if (data.handoff === "recommend") {
+      console.log(`[chat.llm] Handoff intent detected: recommend. Delegating back to backend recommendation service.`);
       return { reply: "", lang: data.lang || lang, handoff: "recommend" };
     }
 
@@ -130,12 +155,14 @@ export async function callChatbotService(
         ...(data.clearPending ? { clearPending: true } : {}),
       };
     }
+
+    console.warn(`[chat.llm] Chatbot service returned empty reply string.`);
     return null;
   } catch (error: any) {
     if (error.name === "AbortError") {
-      console.warn(`[chat.llm] Timeout calling chatbot service at ${serviceUrl}`);
+      console.error(`[chat.llm] Request timed out calling chatbot service at ${serviceUrl} (limit ${timeoutMs}ms)`);
     } else {
-      console.warn(`[chat.llm] Error calling chatbot service:`, error.message);
+      console.error(`[chat.llm] Exception encountered while contacting chatbot service:`, error);
     }
     return null;
   }
