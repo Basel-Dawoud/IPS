@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 import llm
-from catalog import get_catalog, get_embedder
+from catalog import get_catalog_by_version, build_and_cache_catalog, get_embedder
 from brain import respond
 
 logging.basicConfig(level=logging.INFO)
@@ -55,10 +55,11 @@ class PoiIn(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     buildingId: str
+    version: str
     lang: str | None = None
     floorLevel: int | None = None
     pendingPoiId: str | None = None      # = the backend's incoming lastSuggestedPoiId
-    pois: list[PoiIn] = []
+    pois: list[PoiIn] | None = None
 
 
 class ChatAction(BaseModel):
@@ -87,8 +88,16 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
 def chat(req: ChatRequest):
-    pois = [p.model_dump() for p in req.pois]
-    catalog = get_catalog(req.buildingId, pois)
+    catalog = get_catalog_by_version(req.buildingId, req.version)
+    if catalog is None:
+        if req.pois is None:
+            raise HTTPException(
+                status_code=409,
+                detail="POI catalog cache miss. Full POI list required."
+            )
+        pois = [p.model_dump() for p in req.pois]
+        catalog = build_and_cache_catalog(req.buildingId, req.version, pois)
+
     result = respond(
         message=req.message,
         catalog=catalog,

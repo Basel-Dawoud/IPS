@@ -162,27 +162,21 @@ class BuildingCatalog:
         self._ensure_embeddings()
 
 
-# --- per-building cache (rebuilt only when the POI set changes) ---------------
+# --- per-building cache (rebuilt only when the POI version changes) -----------
 _cache: dict[str, tuple[str, BuildingCatalog]] = {}
 _cache_lock = threading.Lock()
 
 
-def _hash_pois(pois: list[dict]) -> str:
-    h = hashlib.sha1()
-    for p in sorted(pois, key=lambda x: x.get("id", "")):
-        h.update((p.get("id", "") + "|" + (p.get("name") or "") + "|"
-                  + ",".join(p.get("aliases") or []) + "|"
-                  + ",".join(p.get("productKeywords") or []) + "|"
-                  + (p.get("description") or "")).encode("utf-8"))
-    return h.hexdigest()
-
-
-def get_catalog(building_id: str, pois: list[dict]) -> BuildingCatalog:
-    digest = _hash_pois(pois)
+def get_catalog_by_version(building_id: str, version: str) -> BuildingCatalog | None:
     with _cache_lock:
         cached = _cache.get(building_id)
-        if cached and cached[0] == digest:
+        if cached and cached[0] == version:
             return cached[1]
-        catalog = BuildingCatalog(pois)
-        _cache[building_id] = (digest, catalog)
+    return None
+
+
+def build_and_cache_catalog(building_id: str, version: str, pois: list[dict]) -> BuildingCatalog:
+    catalog = BuildingCatalog(pois)
+    with _cache_lock:
+        _cache[building_id] = (version, catalog)
     return catalog

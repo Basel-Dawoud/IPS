@@ -61,7 +61,7 @@ class InProcess:
 
     def chat(self, message, pois, pending=None, building="test-building"):
         req = self.app.ChatRequest(
-            message=message, buildingId=building,
+            message=message, buildingId=building, version="test-version",
             pois=[self.app.PoiIn(**p) for p in pois], pendingPoiId=pending,
         )
         resp = self.app.chat(req)
@@ -92,7 +92,7 @@ class Http:
 
     def chat(self, message, pois, pending=None, building="test-building"):
         return self._post("/chat", {
-            "message": message, "buildingId": building,
+            "message": message, "buildingId": building, "version": "test-version",
             "pendingPoiId": pending, "pois": pois,
         })
 
