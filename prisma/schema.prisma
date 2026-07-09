@@ -542,19 +542,16 @@ model User {
   presence       UserPresence?
 }
 
-// -------------------- Live location sharing + friends --------------------
 
-/// One-off "share my live location" link. The token is the permission:
-/// anyone holding it may watch until the share expires or is stopped.
 model LocationShare {
   id             String    @id @default(cuid())
-  token          String    @unique // crypto base64url, the URL secret
-  code           String    @unique // 6-char A-Z2-9, for manual entry
+  token          String    @unique
+  code           String?    @unique
   owner          User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   ownerId        String
   buildingId     String?
-  expiresAt      DateTime? // null = "until stopped"
-  endedAt        DateTime? // set on manual stop
+  expiresAt      DateTime? 
+  endedAt        DateTime? 
   lastX          Float?
   lastY          Float?
   lastFloorLevel Int?
