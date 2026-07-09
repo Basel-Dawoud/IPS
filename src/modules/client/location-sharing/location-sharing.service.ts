@@ -53,15 +53,23 @@ export async function createShare(
   const expiresAt =
     durationMin === null ? null : new Date(Date.now() + durationMin * 60_000);
 
-  const share = await prisma.locationShare.create({
-    data: { token: urlToken(), ownerId, buildingId, expiresAt },
-  });
-
-  return {
-    token: share.token,
-    url: `${publicUrl()}/s/${share.token}`,
-    expiresAt: share.expiresAt?.toISOString() ?? null,
-  };
+  // Retry on the (unlikely) 6-char code collision, same as friend invites.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const share = await prisma.locationShare.create({
+        data: { token: urlToken(), code: friendCode(), ownerId, buildingId, expiresAt },
+      });
+      return {
+        token: share.token,
+        code: share.code,
+        url: `${publicUrl()}/s/${share.token}`,
+        expiresAt: share.expiresAt?.toISOString() ?? null,
+      };
+    } catch (err: any) {
+      if (err?.code !== "P2002") throw err; // unique violation → retry
+    }
+  }
+  throw new Error("Could not generate a unique share code");
 }
 
 export function isShareActive(share: {
@@ -73,9 +81,11 @@ export function isShareActive(share: {
   return true;
 }
 
-export async function getShareView(token: string): Promise<SharePublicView> {
-  const share = await prisma.locationShare.findUnique({
-    where: { token },
+export async function getShareView(tokenOrCode: string): Promise<SharePublicView> {
+  const input = tokenOrCode.trim();
+  // Resolve by the URL token or the manually-typed 6-char code.
+  const share = await prisma.locationShare.findFirst({
+    where: { OR: [{ token: input }, { code: input.toUpperCase() }] },
     include: { owner: { select: { name: true, avatarUrl: true } } },
   });
   if (!share) throw new LocationSharingError("not-found", "Share not found");
@@ -88,6 +98,7 @@ export async function getShareView(token: string): Promise<SharePublicView> {
     : null;
 
   return {
+    token: share.token,
     owner: { name: share.owner.name, avatarUrl: share.owner.avatarUrl },
     building,
     last:

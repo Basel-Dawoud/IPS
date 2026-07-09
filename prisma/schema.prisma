@@ -548,7 +548,8 @@ model User {
 /// anyone holding it may watch until the share expires or is stopped.
 model LocationShare {
   id             String    @id @default(cuid())
-  token          String    @unique // nanoid(21), the URL secret
+  token          String    @unique // crypto base64url, the URL secret
+  code           String    @unique // 6-char A-Z2-9, for manual entry
   owner          User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   ownerId        String
   buildingId     String?

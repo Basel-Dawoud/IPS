@@ -9,7 +9,10 @@ import { Server as SocketServer } from "socket.io";
 import { UPLOADS_ROOT } from "./lib/upload";
 import { initChatSocket } from "./modules/client/chat/chat.socket";
 import { initLocationSocket } from "./modules/client/location-sharing/location-sharing.socket";
-import { sharePage, friendInvitePage } from "./modules/client/location-sharing/location-sharing.pages";
+import {
+  sharePage,
+  friendInvitePage,
+} from "./modules/client/location-sharing/location-sharing.pages";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
