@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { AppState, AppStateStatus } from "react-native";
 import { io, Socket } from "socket.io-client";
 import { env } from "@/lib/env";
 import { getAuthToken } from "@/features/auth/auth-storage";
+import { apiClient } from "@/lib/api-client";
 
 export interface ChatMessage {
   id: string;
@@ -31,6 +33,40 @@ export function useChatSocket({ buildingId, floorLevel }: UseChatSocketProps) {
   const lastSuggestedPoiIdRef = useRef<string | null>(null);
   
   const socketRef = useRef<Socket | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+
+  // Sync ref with latest sessionId to prevent socket connection useEffect from restarting
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const syncSessionMessages = useCallback(async (id: string) => {
+    try {
+      console.log(`[ChatSocket] Syncing messages for session ${id} on reconnect...`);
+      const { data } = await apiClient.get<any[]>(`/client/chat/sessions/${id}/messages`);
+      
+      const mappedMessages: ChatMessage[] = data.map((msg) => ({
+        id: msg.id,
+        text: msg.text,
+        sender: msg.sender.toLowerCase() as "user" | "assistant",
+        timestamp: new Date(msg.createdAt),
+        action: msg.action || undefined,
+      }));
+      setMessages(mappedMessages);
+      
+      const lastAssistantMsg = [...mappedMessages]
+        .reverse()
+        .find((m) => m.sender === "assistant");
+        
+      if (lastAssistantMsg?.action?.type === "navigate" || lastAssistantMsg?.action?.type === "suggest") {
+        lastSuggestedPoiIdRef.current = lastAssistantMsg.action.poiId;
+      } else {
+        lastSuggestedPoiIdRef.current = null;
+      }
+    } catch (err) {
+      console.error("[ChatSocket] Failed to sync session messages on reconnect:", err);
+    }
+  }, []);
 
   useEffect(() => {
     if (!buildingId) return;
@@ -55,16 +91,21 @@ export function useChatSocket({ buildingId, floorLevel }: UseChatSocketProps) {
       console.log("[ChatSocket] Socket.IO chatbot connected successfully.");
       setIsConnected(true);
       setError(null);
+      if (sessionIdRef.current) {
+        syncSessionMessages(sessionIdRef.current);
+      }
     });
 
     socket.on("disconnect", (reason) => {
       console.log("[ChatSocket] Socket.IO chatbot disconnected:", reason);
       setIsConnected(false);
+      setIsSending(false);
     });
 
     socket.on("connect_error", (err) => {
       console.error("[ChatSocket] Socket.IO chatbot connection error:", err);
       setIsConnected(false);
+      setIsSending(false);
       setError("Connection error. Reconnecting...");
     });
 
@@ -112,8 +153,22 @@ export function useChatSocket({ buildingId, floorLevel }: UseChatSocketProps) {
       ]);
     });
 
+    // Track app state to trigger forced reconnection when returning from background/sleep
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === "active") {
+        console.log("[ChatSocket] App returned to active foreground. Checking socket state...");
+        if (socketRef.current && !socketRef.current.connected) {
+          console.log("[ChatSocket] Socket disconnected, forcing connect...");
+          socketRef.current.connect();
+        }
+      }
+    };
+
+    const appStateSubscription = AppState.addEventListener("change", handleAppStateChange);
+
     return () => {
       console.log("[ChatSocket] Cleaning up socket connection...");
+      appStateSubscription.remove();
       socket.disconnect();
       socketRef.current = null;
     };

@@ -57,7 +57,10 @@
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,
-          "modes": ["peripheral", "central"],
+          "modes": [
+            "peripheral",
+            "central"
+          ],
           "bluetoothAlwaysPermission": "Navimind uses Bluetooth to detect indoor beacons for positioning."
         }
       ],
@@ -81,11 +84,32 @@
         {
           "microphonePermission": "Allow Navimind to access the microphone for voice commands.",
           "speechRecognitionPermission": "Allow Navimind to use speech recognition.",
-          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "extraPods": [
+              {
+                "name": "GoogleUtilities",
+                "modular_headers": true
+              },
+              {
+                "name": "RecaptchaInterop",
+                "modular_headers": true
+              }
+            ]
+          }
         }
       ]
     ],
-    "assetBundlePatterns": ["assets/models/*"],
+    "assetBundlePatterns": [
+      "assets/models/*"
+    ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

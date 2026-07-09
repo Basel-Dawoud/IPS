@@ -179,6 +179,7 @@ export function NavigationScreen() {
   const [floorLevel, setFloorLevel] = useState(0);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
   const [infoExpanded, setInfoExpanded] = useState(false);
+  const [variantSelectorOpen, setVariantSelectorOpen] = useState(false);
 
   // Feed the BLE scanner the building's 0xFFF0 service-data → beaconUid map so
   // beacons resolve on iOS (which hides the iBeacon payload) as well as Android.
@@ -1301,32 +1302,55 @@ export function NavigationScreen() {
                         {/* Model selector (GAT configs) */}
                         <View className="gap-2">
                           <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider px-1">
-                            Active Variant
+                            Active Model Variant
                           </Text>
-                          <View className="flex-row gap-2">
-                            {GAT_VARIANTS.map((v) => {
-                              const selected = positioning.variant === v;
-                              return (
-                                <TouchableOpacity
-                                  key={v}
-                                  className={`flex-1 items-center justify-center rounded-xl border py-2 ${
-                                    selected
-                                      ? "bg-brand/20 border-brand/50"
-                                      : "bg-transparent border-white/10"
-                                  }`}
-                                  onPress={() => positioning.setVariant(v)}
-                                >
-                                  <Text
-                                    className={`text-xs font-semibold ${
-                                      selected ? "text-brand" : "text-neutral-300"
+                          <TouchableOpacity
+                            onPress={() => setVariantSelectorOpen(!variantSelectorOpen)}
+                            className="flex-row items-center justify-between rounded-xl border border-white/10 bg-slate-900 px-4 py-3"
+                          >
+                            <View className="flex-row items-center gap-2">
+                              <View className="w-2 h-2 rounded-full bg-brand" />
+                              <Text className="text-xs font-semibold text-neutral-200">
+                                {getGatConfig(positioning.variant).label}
+                              </Text>
+                            </View>
+                            <Text className="text-neutral-400 text-xs">{variantSelectorOpen ? "▲" : "▼"}</Text>
+                          </TouchableOpacity>
+
+                          {variantSelectorOpen && (
+                            <View className="rounded-xl border border-white/10 bg-slate-900/90 p-1.5 gap-1 mt-1">
+                              {GAT_VARIANTS.map((v) => {
+                                const selected = positioning.variant === v;
+                                const cfg = getGatConfig(v);
+                                return (
+                                  <TouchableOpacity
+                                    key={v}
+                                    onPress={() => {
+                                      positioning.setVariant(v);
+                                      setVariantSelectorOpen(false);
+                                    }}
+                                    className={`flex-row items-center justify-between rounded-lg px-3 py-2.5 ${
+                                      selected ? "bg-brand/20" : "bg-transparent"
                                     }`}
                                   >
-                                    {getGatConfig(v).label}
-                                  </Text>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </View>
+                                    <View className="flex-1 pr-4">
+                                      <Text className={`text-xs font-bold ${selected ? "text-brand" : "text-neutral-200"}`}>
+                                        {cfg.label}
+                                      </Text>
+                                      <Text className="text-neutral-500 text-[9px] mt-0.5">
+                                        Window: {cfg.windowSize} {cfg.windowMode === "time" ? "ms" : "rows"}
+                                        {cfg.usesWifi ? " • WiFi" : " • No WiFi"}
+                                        {cfg.useBeaconYPos ? " • Coordinates" : ""}
+                                      </Text>
+                                    </View>
+                                    {selected && (
+                                      <View className="w-1.5 h-1.5 rounded-full bg-brand" />
+                                    )}
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          )}
                         </View>
 
                         {/* Smoother selector */}
@@ -1335,7 +1359,7 @@ export function NavigationScreen() {
                             Smoother Mode
                           </Text>
                           <View className="flex-row gap-2">
-                            {(["pdr", "kalman", "motion_gated"] as const).map((mode) => {
+                            {(["pdr", "kalman", "motion_gated", "velocity"] as const).map((mode) => {
                               const selected = positioning.postProcessMode === mode;
                               return (
                                 <TouchableOpacity
@@ -1348,7 +1372,7 @@ export function NavigationScreen() {
                                   onPress={() => positioning.setPostProcessMode(mode)}
                                 >
                                   <Text
-                                    className={`text-xs font-semibold ${
+                                    className={`text-[10px] font-semibold ${
                                       selected ? "text-brand" : "text-neutral-300"
                                     }`}
                                   >
@@ -1356,7 +1380,9 @@ export function NavigationScreen() {
                                       ? "Motion"
                                       : mode === "pdr"
                                         ? "PDR"
-                                        : "Kalman"}
+                                        : mode === "velocity"
+                                          ? "Velocity"
+                                          : "Kalman"}
                                   </Text>
                                 </TouchableOpacity>
                               );

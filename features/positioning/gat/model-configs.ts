@@ -26,6 +26,10 @@ import nowifi155Norm from "./norm/nowifi_15_5.json";
 import nowifi102UpdNorm from "./norm/nowifi_10_2_upd.json";
 import nowifi155UpdNorm from "./norm/nowifi_15_5_upd.json";
 import trajectoryNorm from "./norm/trajectory.json";
+import meshatshatV2Norm from "./norm/meshatshat_v2.json";
+import meshatshatV3Norm from "./norm/meshatshat_v3.json";
+import meshatshatV3W10S2Norm from "./norm/meshatshat_v3_w10_s2.json";
+import nowifi151Norm from "./norm/nowifi_15_1.json";
 
 export type GatVariant =
   | "without_wifi"
@@ -36,7 +40,11 @@ export type GatVariant =
   | "nowifi_15_5"
   | "nowifi_10_2_upd"
   | "nowifi_15_5_upd"
-  | "trajectory";
+  | "trajectory"
+  | "meshatshat_v2"
+  | "meshatshat_v3"
+  | "meshatshat_v3_w10_s2"
+  | "nowifi_15_1";
 
 /** Which WiFi feature block (if any) the variant appends. None ship WiFi today. */
 export type WifiKind = "none" | "v1" | "v2" | "geom";
@@ -275,6 +283,78 @@ export const GAT_CONFIGS: Record<GatVariant, GatModelConfig> = {
     minBeacons: 3,
     loadAsset: () => require("../../../assets/models/gat_trajectory.onnx"),
   },
+  // ── "meshatshat" retrains (2026-07, models/meshatshat_models/). 41-col arch
+  // WITH IMU (gyro/accel/userAccel/mag/pitch/roll/yaw + motion_magnitude/yaw_rate),
+  // count-5 window, MIN_BEACONS_PER_WINDOW=2, real sigmoid floor. Deployment-ready
+  // ONNX (opset 15, Erf-GELU, I/O named) — golden_io verified Δ=0. Trained with
+  // BEACON_Y_POS={} → useBeaconYPos:false. Train-median maps injected into the norm
+  // JSON (feature_maps.json). v3 = same pipeline retrained on more data. ──
+  meshatshat_v2: {
+    variant: "meshatshat_v2",
+    label: "Meshatshat v2 (IMU)",
+    norm: wrap(meshatshatV2Norm),
+    wifiKind: "none",
+    clipRssiDistance: false,
+    usesWifi: false,
+    hasGraphInput: true,
+    useBeaconYPos: false,
+    windowSize: 5,
+    windowMode: "count",
+    aggregateDurationMs: 1000,
+    minBeacons: 2,
+    loadAsset: () => require("../../../assets/models/gat_meshatshat_v2.onnx"),
+  },
+  meshatshat_v3: {
+    variant: "meshatshat_v3",
+    label: "Meshatshat v3 (IMU)",
+    norm: wrap(meshatshatV3Norm),
+    wifiKind: "none",
+    clipRssiDistance: false,
+    usesWifi: false,
+    hasGraphInput: true,
+    useBeaconYPos: false,
+    windowSize: 5,
+    windowMode: "count",
+    aggregateDurationMs: 1000,
+    minBeacons: 2,
+    loadAsset: () => require("../../../assets/models/gat_meshatshat_v3.onnx"),
+  },
+  // Same 41-col IMU arch/data batch as meshatshat_v3, retrained with window 10 /
+  // stride 2 (vs v3's window 5). golden_io verified Delta<1e-6.
+  meshatshat_v3_w10_s2: {
+    variant: "meshatshat_v3_w10_s2",
+    label: "Meshatshat v3 w10·s2 (IMU)",
+    norm: wrap(meshatshatV3W10S2Norm),
+    wifiKind: "none",
+    clipRssiDistance: false,
+    usesWifi: false,
+    hasGraphInput: true,
+    useBeaconYPos: false,
+    windowSize: 10,
+    windowMode: "count",
+    aggregateDurationMs: 1000,
+    minBeacons: 2,
+    loadAsset: () => require("../../../assets/models/gat_meshatshat_v3_w10_s2.onnx"),
+  },
+  // 24-col no-IMU sibling (models/meshatshat_models/nowifi_15_1_no_imu/). Window 15.
+  // No source code shipped -> no own feature_maps.json; median maps borrowed from
+  // nowifi_15_2 (same data/ corpus/lineage, not the meshatshat_* batch) and injected
+  // into norm/nowifi_15_1.json. golden_io verified Delta=0.
+  nowifi_15_1: {
+    variant: "nowifi_15_1",
+    label: "No WiFi 15·1 (no IMU)",
+    norm: wrap(nowifi151Norm),
+    wifiKind: "none",
+    clipRssiDistance: false,
+    usesWifi: false,
+    hasGraphInput: true,
+    useBeaconYPos: false,
+    windowSize: 15,
+    windowMode: "count",
+    aggregateDurationMs: 1000,
+    minBeacons: 2,
+    loadAsset: () => require("../../../assets/models/gat_nowifi_15_1.onnx"),
+  },
 };
 
 export const GAT_VARIANTS: GatVariant[] = [
@@ -287,6 +367,10 @@ export const GAT_VARIANTS: GatVariant[] = [
   "nowifi_10_2_upd",
   "nowifi_15_5_upd",
   "trajectory",
+  "meshatshat_v2",
+  "meshatshat_v3",
+  "meshatshat_v3_w10_s2",
+  "nowifi_15_1",
 ];
 // nowifi_v3 is the verified re-export (2.54 m MAE offline); the old without_wifi
 // asset was a corrupted swish-clone export and should not be the default.
