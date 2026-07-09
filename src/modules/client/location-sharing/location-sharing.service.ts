@@ -56,12 +56,14 @@ export async function createShare(
   // Retry on the (unlikely) 6-char code collision, same as friend invites.
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
+      const token = urlToken();
+      const code = friendCode();
       const share = await prisma.locationShare.create({
-        data: { token: urlToken(), code: friendCode(), ownerId, buildingId, expiresAt },
+        data: { token, code, ownerId, buildingId, expiresAt },
       });
       return {
         token: share.token,
-        code: share.code,
+        code,
         url: `${publicUrl()}/s/${share.token}`,
         expiresAt: share.expiresAt?.toISOString() ?? null,
       };
