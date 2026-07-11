@@ -1,7 +1,8 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Building2, Radio, Fingerprint, LogOut } from "lucide-react";
+import { LayoutDashboard, Building2, Radio, Fingerprint, LogOut, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "@/features/auth/AuthContext";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -12,6 +13,19 @@ const navItems = [
 
 export function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout, hasPermission } = useAuth();
+
+  const items = hasPermission("internal-users:manage")
+    ? [...navItems, { label: "Admin Users", href: "/admin-users", icon: ShieldCheck }]
+    : navItems;
+
+  const initials = (user?.name ?? user?.email ?? "??")
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase())
+    .join("");
 
   const isActive = (href: string) => {
     if (href === "/") return location.pathname === "/";
@@ -30,7 +44,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-1 px-3 py-4">
-        {navItems.map((item) => (
+        {items.map((item) => (
           <Link
             key={item.href}
             to={item.href}
@@ -50,17 +64,23 @@ export function Sidebar() {
       <div className="mt-auto border-t p-4 space-y-4 bg-muted/10">
         <div className="flex items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-semibold border border-primary/20">
-            RE
+            {initials}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold truncate text-foreground leading-none">Rmeon Ehab</p>
-            <p className="text-[10px] text-muted-foreground mt-1 capitalize leading-none font-mono">admin</p>
+            <p className="text-sm font-semibold truncate text-foreground leading-none">
+              {user?.name ?? user?.email}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1 capitalize leading-none font-mono">
+              {user?.internalRole?.roleName}
+            </p>
           </div>
         </div>
 
         <button
           onClick={() => {
-            toast.success("Successfully signed out (Demo Mode)");
+            logout();
+            toast.success("Signed out");
+            navigate("/login", { replace: true });
           }}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
         >

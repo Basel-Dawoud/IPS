@@ -53,7 +53,6 @@ export function BuildingForm({
   const [zoneTouched, setZoneTouched] = useState(false);
 
   const [pin, setPin] = useState<PinLatLng | null>(null);
-  const [pinTouched, setPinTouched] = useState(false);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -91,7 +90,6 @@ export function BuildingForm({
       setPin(null);
     }
     setZoneTouched(false);
-    setPinTouched(false);
   }, [editTarget]);
 
   const handleZoneChange = (next: Polygon | null) => {
@@ -222,7 +220,6 @@ export function BuildingForm({
             value={pin}
             onChange={(next) => {
               setPin(next);
-              setPinTouched(true);
             }}
             className="h-[320px] w-full overflow-hidden rounded-md border"
           />
@@ -234,7 +231,6 @@ export function BuildingForm({
               className="text-xs h-8 px-2 text-destructive"
               onClick={() => {
                 setPin(null);
-                setPinTouched(true);
               }}
             >
               Reset Pin
