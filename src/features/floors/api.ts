@@ -26,6 +26,15 @@ export async function deleteFloor(id: string): Promise<void> {
   await axiosClient.delete(`/admin/floors/${id}`);
 }
 
+// Backfill: re-derive STAIRS/ELEVATOR POIs from the floor's stored vector map
+// (for floors uploaded before auto-create existed). Returns the created counts.
+export async function detectFloorTransitions(
+  id: string,
+): Promise<{ createdStairs: number; createdElevators: number }> {
+  const res = await axiosClient.post(`/admin/floors/${id}/detect-transitions`);
+  return res.data.data;
+}
+
 // Uploads a floor plan image (multipart). The backend stores it, reads its
 // pixel dimensions, and returns the updated floor with mapUrl + imageWidthPx/Px.
 export async function uploadFloorImage(id: string, file: File): Promise<Floor> {

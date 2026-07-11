@@ -6,6 +6,7 @@ import {
   useDeleteFloor,
   useUpdateFloor,
   useUploadFloorImage,
+  useDetectFloorTransitions,
 } from "@/features/floors/hooks";
 import { FloorCalibrator } from "@/features/floors/components/FloorCalibrator";
 import { FloorForm } from "@/features/floors/components/FloorForm";
@@ -22,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, Trash2, Layers, Map, ArrowRight } from "lucide-react";
+import { Plus, Trash2, Layers, Map, ArrowRight, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 
 interface FloorsTabProps {
@@ -35,6 +36,7 @@ export function FloorsTab({ buildingId }: FloorsTabProps) {
   const deleteFloor = useDeleteFloor();
   const updateFloor = useUpdateFloor();
   const uploadFloorImage = useUploadFloorImage();
+  const detectTransitions = useDetectFloorTransitions();
 
   const [floorFormOpen, setFloorFormOpen] = useState(false);
   const [deleteFloorId, setDeleteFloorId] = useState<string | null>(null);
@@ -109,6 +111,21 @@ export function FloorsTab({ buildingId }: FloorsTabProps) {
         onError: () => toast.error("Failed to save calibration"),
       },
     );
+  };
+
+  const handleDetectTransitions = () => {
+    if (!selectedCalibFloorId) return;
+    detectTransitions.mutate(selectedCalibFloorId, {
+      onSuccess: (res) => {
+        const total = res.createdStairs + res.createdElevators;
+        toast.success(
+          total > 0
+            ? `Created ${res.createdStairs} stairs + ${res.createdElevators} elevator POIs`
+            : "No new stairs/elevators detected (already present)",
+        );
+      },
+      onError: () => toast.error("Failed to detect stairs/elevators"),
+    });
   };
 
   const handleConfirmDeleteFloor = () => {
@@ -245,13 +262,28 @@ export function FloorsTab({ buildingId }: FloorsTabProps) {
                   />
                 )}
 
-                <Button
-                  onClick={saveFloorCalibration}
-                  size="sm"
-                  disabled={updateFloor.isPending}
-                >
-                  {updateFloor.isPending ? "Saving..." : "Save Calibration"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={saveFloorCalibration}
+                    size="sm"
+                    disabled={updateFloor.isPending}
+                  >
+                    {updateFloor.isPending ? "Saving..." : "Save Calibration"}
+                  </Button>
+                  {selectedCalibFloor?.vectorMap && (
+                    <Button
+                      onClick={handleDetectTransitions}
+                      size="sm"
+                      variant="outline"
+                      disabled={detectTransitions.isPending}
+                    >
+                      <ArrowUpDown className="size-4 mr-1" />
+                      {detectTransitions.isPending
+                        ? "Detecting…"
+                        : "Detect stairs/elevators"}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
           </div>

@@ -6,6 +6,7 @@ import {
   updateFloor,
   deleteFloor,
   uploadFloorImage,
+  detectFloorTransitions,
 } from "./api";
 import type { CreateFloorInput, UpdateFloorInput } from "./types";
 
@@ -62,6 +63,17 @@ export function useUploadFloorImage() {
     mutationFn: ({ id, file }: { id: string; file: File }) => uploadFloorImage(id, file),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["floors"] });
+    },
+  });
+}
+
+export function useDetectFloorTransitions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => detectFloorTransitions(id),
+    onSuccess: () => {
+      // New POIs were created — refresh POI lists.
+      qc.invalidateQueries({ queryKey: ["pois"] });
     },
   });
 }
