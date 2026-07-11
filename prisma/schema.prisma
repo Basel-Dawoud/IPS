@@ -546,7 +546,7 @@ model User {
 model LocationShare {
   id             String    @id @default(cuid())
   token          String    @unique
-  code           String    @unique // 6-char A-Z2-9, for manual entry
+  code           String?    @unique // 6-char A-Z2-9, for manual entry
   owner          User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   ownerId        String
   buildingId     String?
