@@ -875,6 +875,7 @@ model EmergencyAlert {
   message          String?
   gatheringPointId String?   // POI ID acting as gathering point
   blockedPoiIds    String[]  // List of blocked POI IDs (stairs/elevators)
+  blockedZones     Json[]    // List of inaccessible area zones {x,y,w,h,floorLevel}
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }

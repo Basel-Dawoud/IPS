@@ -1,4 +1,5 @@
 import prisma from "../../../lib/prisma";
+import type { BlockedZone } from "./emergency.schema";
 
 export const getEmergencyState = async (buildingId: string) => {
   let alert = await prisma.emergencyAlert.findUnique({
@@ -10,6 +11,7 @@ export const getEmergencyState = async (buildingId: string) => {
         buildingId,
         isActive: false,
         blockedPoiIds: [],
+        blockedZones: [],
       },
     });
   }
@@ -18,7 +20,12 @@ export const getEmergencyState = async (buildingId: string) => {
 
 export const triggerEmergency = async (
   buildingId: string,
-  data: { gatheringPointId?: string | null; blockedPoiIds?: string[]; message?: string }
+  data: {
+    gatheringPointId?: string | null;
+    blockedPoiIds?: string[];
+    blockedZones?: BlockedZone[];
+    message?: string;
+  }
 ) => {
   return prisma.emergencyAlert.upsert({
     where: { buildingId },
@@ -26,6 +33,7 @@ export const triggerEmergency = async (
       isActive: true,
       gatheringPointId: data.gatheringPointId ?? null,
       blockedPoiIds: data.blockedPoiIds ?? [],
+      blockedZones: data.blockedZones ?? [],
       message: data.message ?? "Emergency alert! Please evacuate.",
     },
     create: {
@@ -33,6 +41,7 @@ export const triggerEmergency = async (
       isActive: true,
       gatheringPointId: data.gatheringPointId ?? null,
       blockedPoiIds: data.blockedPoiIds ?? [],
+      blockedZones: data.blockedZones ?? [],
       message: data.message ?? "Emergency alert! Please evacuate.",
     },
   });
@@ -46,11 +55,13 @@ export const clearEmergency = async (buildingId: string) => {
       message: null,
       gatheringPointId: null,
       blockedPoiIds: [],
+      blockedZones: [],
     },
     create: {
       buildingId,
       isActive: false,
       blockedPoiIds: [],
+      blockedZones: [],
     },
   });
 };

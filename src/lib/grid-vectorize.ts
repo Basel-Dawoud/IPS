@@ -63,7 +63,12 @@ function mergeRects(mask: Uint8Array, rows: number, cols: number): VectorRect[] 
       for (let dr = 0; dr < h; dr++) {
         for (let dc = 0; dc < w; dc++) used[(r + dr) * cols + c + dc] = 1;
       }
-      rects.push({ x: c * CELL_SIZE, y: r * CELL_SIZE, w: w * CELL_SIZE, h: h * CELL_SIZE });
+      rects.push({
+        x: c * CELL_SIZE,
+        y: r * CELL_SIZE,
+        w: w * CELL_SIZE,
+        h: h * CELL_SIZE,
+      });
     }
   }
   return rects;
@@ -106,10 +111,26 @@ function components(mask: Uint8Array, rows: number, cols: number): number[][] {
 export function vectorizeGrid(grid: NpyGrid): VectorMap {
   const { rows, cols } = grid;
 
-  const walls = mergeRects(maskOf(grid, (v) => v === 1), rows, cols);
-  const corridors = mergeRects(maskOf(grid, (v) => v === 6), rows, cols);
-  const stairs = mergeRects(maskOf(grid, (v) => v === 2 || v === 4), rows, cols);
-  const elevators = mergeRects(maskOf(grid, (v) => v === 3), rows, cols);
+  const walls = mergeRects(
+    maskOf(grid, (v) => v === 1),
+    rows,
+    cols,
+  );
+  const corridors = mergeRects(
+    maskOf(grid, (v) => v === 6),
+    rows,
+    cols,
+  );
+  const stairs = mergeRects(
+    maskOf(grid, (v) => v === 2 || v === 4),
+    rows,
+    cols,
+  );
+  const elevators = mergeRects(
+    maskOf(grid, (v) => v === 3),
+    rows,
+    cols,
+  );
 
   const roomMask = maskOf(grid, (v) => v === 5);
   const rooms: VectorRoom[] = components(roomMask, rows, cols).map((cells) => {
@@ -142,4 +163,92 @@ export function vectorizeGrid(grid: NpyGrid): VectorMap {
 
 export function vectorizeNpyBuffer(buf: Buffer): VectorMap {
   return vectorizeGrid(parseNpy(buf));
+}
+
+export interface TransitionPoint {
+  cx: number;
+  cy: number;
+}
+
+export interface TransitionRegions {
+  stairs: TransitionPoint[];
+  elevators: TransitionPoint[];
+}
+
+function regionCentroids(
+  mask: Uint8Array,
+  rows: number,
+  cols: number,
+): TransitionPoint[] {
+  return components(mask, rows, cols).map((cells) => {
+    let sr = 0;
+    let sc = 0;
+    for (const i of cells) {
+      sr += Math.floor(i / cols);
+      sc += i % cols;
+    }
+    return {
+      cx: (sc / cells.length) * CELL_SIZE,
+      cy: (sr / cells.length) * CELL_SIZE,
+    };
+  });
+}
+
+export function detectTransitionRegions(grid: NpyGrid): TransitionRegions {
+  const { rows, cols } = grid;
+  return {
+    stairs: regionCentroids(
+      maskOf(grid, (v) => v === 2 || v === 4),
+      rows,
+      cols,
+    ),
+    elevators: regionCentroids(
+      maskOf(grid, (v) => v === 3),
+      rows,
+      cols,
+    ),
+  };
+}
+
+function clusterRects(rects: VectorRect[]): TransitionPoint[] {
+  const EPS = CELL_SIZE; // rects within one cell count as the same shaft
+  const parent = rects.map((_, i) => i);
+  const find = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = find(parent[i]));
+  const touches = (a: VectorRect, b: VectorRect) =>
+    a.x <= b.x + b.w + EPS &&
+    b.x <= a.x + a.w + EPS &&
+    a.y <= b.y + b.h + EPS &&
+    b.y <= a.y + a.h + EPS;
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      if (touches(rects[i], rects[j])) parent[find(i)] = find(j);
+    }
+  }
+  const groups = new Map<number, VectorRect[]>();
+  rects.forEach((r, i) => {
+    const root = find(i);
+    (groups.get(root) ?? groups.set(root, []).get(root)!).push(r);
+  });
+  return [...groups.values()].map((group) => {
+    let sumA = 0;
+    let sx = 0;
+    let sy = 0;
+    for (const r of group) {
+      const a = r.w * r.h || 1;
+      sumA += a;
+      sx += (r.x + r.w / 2) * a;
+      sy += (r.y + r.h / 2) * a;
+    }
+    return { cx: sx / sumA, cy: sy / sumA };
+  });
+}
+
+export function transitionRegionsFromVectorMap(
+  vm: Pick<VectorMap, "stairs" | "elevators"> | null | undefined,
+): TransitionRegions {
+  return {
+    stairs: clusterRects(vm?.stairs ?? []),
+    elevators: clusterRects(vm?.elevators ?? []),
+  };
 }

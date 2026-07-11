@@ -85,6 +85,7 @@ import clientVisitRoutes from "./modules/client/visits/visits.routes";
 import clientSearchRoutes from "./modules/client/search/search.routes";
 import clientLocationSharingRoutes from "./modules/client/location-sharing/location-sharing.routes";
 import clientFriendsRoutes from "./modules/client/location-sharing/friends.routes";
+import adminIpsRoutes from "./modules/admin/ips/ips.routes";
 import { optionalAuth } from "./middleware/optional-auth";
 
 app.use(optionalAuth);
@@ -114,6 +115,7 @@ app.use("/api/client/visits", clientVisitRoutes);
 app.use("/api/client/search", clientSearchRoutes);
 app.use("/api/client/location-sharing", clientLocationSharingRoutes);
 app.use("/api/client/friends", clientFriendsRoutes);
+app.use("/api/admin/ips", adminIpsRoutes);
 
 app.use(
   (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

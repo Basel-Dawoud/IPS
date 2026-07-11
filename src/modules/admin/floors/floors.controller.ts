@@ -6,7 +6,12 @@ import * as floorService from "./floors.service";
 import { createFloorSchema, updateFloorSchema } from "./floors.schema";
 import { publicUrlForFloorImage } from "../../../lib/upload";
 import { parseNpy, renderGridPng } from "../../../lib/npy";
-import { vectorizeGrid } from "../../../lib/grid-vectorize";
+import {
+  vectorizeGrid,
+  detectTransitionRegions,
+  transitionRegionsFromVectorMap,
+} from "../../../lib/grid-vectorize";
+import { autoCreateTransitionPois } from "../pois/pois.service";
 import {
   sendSuccess,
   sendCreated,
@@ -70,10 +75,6 @@ export const updateFloor = async (req: Request, res: Response) => {
   }
 };
 
-// POST /:id/image — multipart "image". Accepts a plan image (PNG/JPEG/WebP) OR
-// a NumPy `.npy` occupancy grid. For `.npy` we parse it and render a PNG (one
-// pixel per cell). Either way we then read the PNG's pixel dimensions and store
-// the URL + dimensions on the floor (scale/rotation are set separately via PATCH).
 export const uploadFloorImage = async (req: Request, res: Response) => {
   const file = req.file;
   try {
@@ -93,6 +94,7 @@ export const uploadFloorImage = async (req: Request, res: Response) => {
     let pngPath = file.path;
     let pngFilename = file.filename;
     let vectorMap: unknown = undefined;
+    let transitionRegions: ReturnType<typeof detectTransitionRegions> | null = null;
     if (path.extname(file.filename).toLowerCase() === ".npy") {
       try {
         const grid = parseNpy(fs.readFileSync(file.path));
@@ -101,6 +103,7 @@ export const uploadFloorImage = async (req: Request, res: Response) => {
         pngPath = path.join(path.dirname(file.path), pngFilename);
         fs.writeFileSync(pngPath, pngBuffer);
         vectorMap = vectorizeGrid(grid);
+        transitionRegions = detectTransitionRegions(grid);
       } finally {
         fs.unlink(file.path, () => {}); // drop the raw .npy
       }
@@ -118,10 +121,53 @@ export const uploadFloorImage = async (req: Request, res: Response) => {
       imageHeightPx: dim.height,
       vectorMap,
     });
+
+    // Auto-create STAIRS/ELEVATOR POIs (one per detected shaft, deduped) so
+    // navigation drives floor changes off POIs rather than raw grid cell codes.
+    if (transitionRegions) {
+      try {
+        await autoCreateTransitionPois(
+          existing.buildingId,
+          existing.level,
+          transitionRegions,
+        );
+      } catch (err) {
+        console.error(
+          `[floors.controller] Failed to auto-create transition POIs for floor ${id}:`,
+          err,
+        );
+      }
+    }
+
     return sendSuccess(res, floor, 200, "Floor image uploaded");
   } catch (error) {
     if (file) fs.unlink(file.path, () => {});
     return sendServerError(res, "Failed to process floor image");
+  }
+};
+
+export const detectTransitions = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const floor = await floorService.getFloorById(id);
+    if (!floor) {
+      return sendNotFound(res, "Floor");
+    }
+    if (!floor.vectorMap) {
+      return sendBadRequest(
+        res,
+        "Floor has no vector map — re-upload a .npy grid to enable transition detection",
+      );
+    }
+    const regions = transitionRegionsFromVectorMap(floor.vectorMap as never);
+    const created = await autoCreateTransitionPois(
+      floor.buildingId,
+      floor.level,
+      regions,
+    );
+    return sendSuccess(res, created, 200, "Transition POIs detected");
+  } catch (error) {
+    return sendServerError(res, "Failed to detect transitions");
   }
 };
 
