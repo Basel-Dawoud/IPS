@@ -45,9 +45,14 @@ model Building {
   chatSessions           ChatSession[]
   buildingVisits         BuildingVisit[]
 
+  products               Product[]
+
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   poiUpdatedAt DateTime      @default(now())
+  // Version stamp for the product catalog, mirroring poiUpdatedAt. The chatbot
+  // service caches products per building keyed by this timestamp.
+  productUpdatedAt DateTime  @default(now())
   measurements Measurement[]
   emergencyAlert EmergencyAlert?
 }
@@ -419,6 +424,7 @@ model Poi {
   reviews        PoiReview[]
   deals          Deal[]
   buildingVisits BuildingVisit[]
+  products       Product[]
 
   isEmergencyExit Boolean @default(false)
   isGatheringPoint Boolean @default(false)
@@ -448,6 +454,40 @@ model PoiCategory {
   users       User[]   @relation("UserInterests")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// A purchasable product sold by a store (Poi). Seeded from the AI engineer's
+// sort_data.json. The chatbot service fetches these per building (cached by
+// Building.productUpdatedAt) to answer product-recommendation requests.
+model Product {
+  id String @id @default(cuid())
+
+  name        String
+  brand       String?
+  // Price stored as an integer (currency-agnostic minor-unitless value); the
+  // source strings like "₹7,989" are digit-stripped at seed time.
+  price       Int     @default(0)
+  rating      Float   @default(0)
+  reviewCount Int     @default(0)
+
+  // Taxonomy carried over from sort_data.json (e.g. category "Mobiles",
+  // subCategory "Samsung mobiles"). Used to group/rank within a store.
+  category    String?
+  subCategory String?
+
+  // The store that sells it. Nullable so a product whose category can't be
+  // mapped to a Poi is still retained.
+  poi   Poi?    @relation(fields: [poiId], references: [id], onDelete: SetNull)
+  poiId String?
+
+  building   Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  buildingId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buildingId])
+  @@index([poiId])
 }
 
 model PoiVisit {

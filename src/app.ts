@@ -71,6 +71,7 @@ import clientPositioningRoutes from "./modules/client/positioning/positioning.ro
 import adminMapRoutes from "./modules/admin/map/map.routes";
 import adminPoiRoutes from "./modules/admin/pois/pois.routes";
 import clientPoiRoutes from "./modules/client/pois/pois.routes";
+import clientProductRoutes from "./modules/client/products/products.routes";
 import clientNavigationRoutes from "./modules/client/navigation/navigation.routes";
 import adminFingerprintingRoutes from "./modules/admin/fingerprinting/fingerprinting.routes";
 import adminTrajectoryRoutes from "./modules/admin/trajectory/trajectory.routes";
@@ -86,6 +87,7 @@ import clientSearchRoutes from "./modules/client/search/search.routes";
 import clientLocationSharingRoutes from "./modules/client/location-sharing/location-sharing.routes";
 import clientFriendsRoutes from "./modules/client/location-sharing/friends.routes";
 import adminIpsRoutes from "./modules/admin/ips/ips.routes";
+import clientIpsRoutes from "./modules/client/ips/ips.routes";
 import internalUsersRoutes from "./modules/internal-auth/internal-users/internal-users.routes";
 import { optionalAuth } from "./middleware/optional-auth";
 import { optionalInternalAuth, requireInternalAuth } from "./middleware/internal-auth";
@@ -106,6 +108,7 @@ app.use("/api/client/positioning", clientPositioningRoutes);
 app.use("/api/admin/map", requireInternalAuth, adminMapRoutes);
 app.use("/api/admin/pois", requireInternalAuth, adminPoiRoutes);
 app.use("/api/client/pois", clientPoiRoutes);
+app.use("/api/client/products", clientProductRoutes);
 app.use("/api/client/navigation", clientNavigationRoutes);
 app.use("/api/client/chat/sessions", clientChatSessionRoutes);
 app.use("/api/client/recommendations", clientRecommendationRoutes);
@@ -120,6 +123,9 @@ app.use("/api/client/search", clientSearchRoutes);
 app.use("/api/client/location-sharing", clientLocationSharingRoutes);
 app.use("/api/client/friends", clientFriendsRoutes);
 app.use("/api/admin/ips", requireInternalAuth, adminIpsRoutes);
+// Public geometry export for the FastAPI IPS analytics plane (service-to-
+// service; admin routes require an internal user session, unusable here).
+app.use("/api/client/ips", clientIpsRoutes);
 
 app.use(
   (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

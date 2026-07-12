@@ -26,18 +26,22 @@ export async function callChatbotService(
   // Qwen on CPU can take a few seconds; default generously.
   const timeoutMs = Number(process.env.CHATBOT_SERVICE_TIMEOUT_MS || 60000);
 
-  // 1. Get the building's POI version timestamp
+  // 1. Get the building's POI + product version timestamps
   let version = new Date().toISOString();
+  let productsVersion = version;
   try {
     const building = await prisma.building.findUnique({
       where: { id: input.buildingId },
-      select: { poiUpdatedAt: true },
+      select: { poiUpdatedAt: true, productUpdatedAt: true },
     });
     if (building?.poiUpdatedAt) {
       version = building.poiUpdatedAt.toISOString();
     }
+    if (building?.productUpdatedAt) {
+      productsVersion = building.productUpdatedAt.toISOString();
+    }
   } catch (err) {
-    console.error("[chat.llm] Error fetching building poiUpdatedAt:", err);
+    console.error("[chat.llm] Error fetching building versions:", err);
   }
 
   const makeRequest = async (poisPayload: any[] | null) => {
@@ -61,6 +65,7 @@ export async function callChatbotService(
         floorLevel: input.floorLevel,
         pendingPoiId: input.lastSuggestedPoiId ?? null,
         version,
+        productsVersion,
         pois: poisPayload,
       };
 
