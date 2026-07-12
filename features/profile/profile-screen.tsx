@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ScrollView,
   Text,
@@ -16,11 +17,16 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useBleScanner } from "@/features/ble/use-ble-scanner";
-import { isOrtAvailable } from "@/features/positioning/gat";
+import {
+  isOrtAvailable,
+  GAT_VARIANTS,
+  getGatConfig,
+  type GatVariant,
+} from "@/features/positioning/gat";
 import { useProximity } from "@/features/proximity/proximity-provider";
 import { useAuth } from "@/features/auth/auth-provider";
 import { useSettings } from "@/features/settings/settings-provider";
-import { resolveAssetSource } from "@/lib/api-client";
+import { resolveAssetSource, apiClient } from "@/lib/api-client";
 import { fetchRecentVisits } from "./recent-visits-api";
 import { RecentVisitRow, useNavigateToVisit } from "./recent-visit-row";
 import { clearRecentVisits, deleteAccount } from "./api";
@@ -127,12 +133,52 @@ export function ProfileScreen() {
     setDebugMode,
     bypassEnabled,
     setBypassEnabled,
+    showBypassGui,
+    setShowBypassGui,
+    bypassMode,
+    setBypassMode,
+    bypassVideoSessionId,
+    setBypassVideoSessionId,
+    bypassVideoWalkIndex,
+    setBypassVideoWalkIndex,
+    bypassVideoModel,
+    setBypassVideoModel,
+    bypassVideoPositionSource,
+    setBypassVideoPositionSource,
+    bypassVideoModelSmoother,
+    setBypassVideoModelSmoother,
     notificationsEnabled,
     setNotificationsEnabled,
   } = useSettings();
+
+  const {
+    data: trajectorySessions,
+    isLoading: sessionsLoading,
+    error: sessionsError,
+  } = useQuery<any[]>({
+    queryKey: ["trajectory-sessions"],
+    queryFn: async () => {
+      const res = await apiClient.get("/admin/trajectory/sessions");
+      return res.data;
+    },
+    enabled: bypassEnabled && bypassMode === "video",
+  });
+
+  const { data: replayData } = useQuery({
+    queryKey: ["session-replay", bypassVideoSessionId],
+    queryFn: async () => {
+      if (!bypassVideoSessionId) return null;
+      const res = await apiClient.get(
+        `/admin/trajectory/sessions/${bypassVideoSessionId}/replay`,
+      );
+      return res.data;
+    },
+    enabled: bypassEnabled && bypassMode === "video" && !!bypassVideoSessionId,
+  });
   const router = useRouter();
   const queryClient = useQueryClient();
   const navigateToVisit = useNavigateToVisit();
+  const [videoModelSelectorOpen, setVideoModelSelectorOpen] = useState(false);
   const displayName = user?.name ?? user?.email?.split("@")[0] ?? "Welcome";
   const displayEmail = user?.email ?? "Not signed in";
   const avatarSource = resolveAssetSource(user?.avatarUrl);
@@ -428,6 +474,347 @@ export function ProfileScreen() {
               value={bypassEnabled}
               onValueChange={setBypassEnabled}
             />
+            {bypassEnabled && (
+              <View className="pl-4 border-l border-white/10 mt-2">
+                {/* Mode Selector */}
+                <View className="flex-row justify-between items-center py-3 border-b border-white/5">
+                  <View className="flex-1 mr-4">
+                    <Text className="text-base text-neutral-200 font-medium">
+                      Bypass Mode
+                    </Text>
+                    <Text className="text-xs text-neutral-400 mt-0.5">
+                      Manual coordinates or simulated walk
+                    </Text>
+                  </View>
+                  <View className="flex-row gap-2">
+                    <TouchableOpacity
+                      onPress={() => setBypassMode("manual")}
+                      className={`px-3 py-1.5 rounded-lg border ${
+                        bypassMode === "manual"
+                          ? "bg-[#007AFF] border-[#007AFF]"
+                          : "bg-transparent border-white/10"
+                      }`}
+                    >
+                      <Text
+                        className={`text-xs font-semibold ${bypassMode === "manual" ? "text-white" : "text-neutral-300"}`}
+                      >
+                        Manual
+                      </Text>
+                    </TouchableOpacity>
+                    {/* <TouchableOpacity
+                      onPress={() => setBypassMode("video")}
+                      className={`px-3 py-1.5 rounded-lg border ${
+                        bypassMode === "video"
+                          ? "bg-[#007AFF] border-[#007AFF]"
+                          : "bg-transparent border-white/10"
+                      }`}
+                    >
+                      <Text className={`text-xs font-semibold ${bypassMode === "video" ? "text-white" : "text-neutral-300"}`}>
+                        Video
+                      </Text>
+                    </TouchableOpacity> */}
+                  </View>
+                </View>
+
+                {bypassMode === "manual" ? (
+                  <ToggleRow
+                    label="Show Bypass Controls"
+                    description="Show the manual movement pad on the map screen"
+                    value={showBypassGui}
+                    onValueChange={setShowBypassGui}
+                  />
+                ) : (
+                  <View className="py-3">
+                    <Text className="text-sm font-medium text-neutral-200 mb-2">
+                      Select Trajectory Session
+                    </Text>
+                    {sessionsLoading ? (
+                      <ActivityIndicator size="small" color="#007AFF" className="my-2" />
+                    ) : sessionsError ? (
+                      <Text className="text-xs text-neutral-400 font-medium">
+                        Failed to load sessions: {String(sessionsError)}
+                      </Text>
+                    ) : trajectorySessions && trajectorySessions.length > 0 ? (
+                      <View className="gap-2 mt-1">
+                        {trajectorySessions.map((s: any) => {
+                          const hasNoWalks = !s.walkCount || s.walkCount === 0;
+                          const isSelected = bypassVideoSessionId === s.id;
+                          return (
+                            <TouchableOpacity
+                              key={s.id}
+                              disabled={hasNoWalks}
+                              onPress={() => {
+                                setBypassVideoSessionId(s.id);
+                                setBypassVideoWalkIndex(0); // Reset walk index on session change
+                              }}
+                              className={`p-3 rounded-xl border flex-row items-center justify-between ${
+                                isSelected
+                                  ? "bg-[#007AFF]/10 border-[#007AFF]"
+                                  : hasNoWalks
+                                    ? "bg-neutral-900/20 border-white/5 opacity-40"
+                                    : "bg-white/5 border-white/5"
+                              }`}
+                            >
+                              <View className="flex-1 pr-4">
+                                <Text
+                                  className={`text-sm font-semibold ${hasNoWalks ? "text-neutral-500" : "text-neutral-200"}`}
+                                >
+                                  {s.name?.trim() || `Session ${s.id.slice(0, 8)}`}
+                                </Text>
+                                <Text className="text-xs text-neutral-400 mt-1">
+                                  Floor {s.floorLevel} · {s.walkCount ?? 0} walks ·{" "}
+                                  {new Date(s.startedAt).toLocaleDateString()}
+                                </Text>
+                              </View>
+                              {isSelected ? (
+                                <Ionicons
+                                  name="checkmark-circle"
+                                  size={20}
+                                  color="#007AFF"
+                                />
+                              ) : hasNoWalks ? (
+                                <View className="bg-red-500/10 border border-red-500/20 rounded-md px-1.5 py-0.5">
+                                  <Text className="text-[10px] font-bold text-red-400 uppercase">
+                                    No Walks
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ) : (
+                      <Text className="text-xs text-neutral-400">
+                        No trajectory sessions found.
+                      </Text>
+                    )}
+
+                    {/* Walk Selector */}
+                    {bypassVideoSessionId && replayData && (
+                      <View className="mt-4 border-t border-white/5 pt-3">
+                        <Text className="text-sm font-medium text-neutral-200 mb-2">
+                          Select Walk
+                        </Text>
+                        {replayData.walks && replayData.walks.length > 0 ? (
+                          <View className="flex-row flex-wrap gap-2 mt-1">
+                            {replayData.walks.map((w: any, idx: number) => {
+                              const durationSec = w.events?.length
+                                ? Math.round(w.events[w.events.length - 1].tMs / 1000)
+                                : 0;
+                              return (
+                                <TouchableOpacity
+                                  key={w.id}
+                                  onPress={() => setBypassVideoWalkIndex(idx)}
+                                  className={`px-3 py-2 rounded-xl border ${
+                                    bypassVideoWalkIndex === idx
+                                      ? "bg-[#007AFF]/10 border-[#007AFF]"
+                                      : "bg-white/5 border-white/5"
+                                  }`}
+                                >
+                                  <Text className="text-xs font-semibold text-neutral-200">
+                                    Walk #{idx + 1} ({durationSec}s · {w.totalSteps}{" "}
+                                    steps)
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        ) : (
+                          <Text className="text-xs text-neutral-400">
+                            Selected session has no walks.
+                          </Text>
+                        )}
+                      </View>
+                    )}
+
+                    {/* Position Source Selector */}
+                    {bypassVideoSessionId && (
+                      <View className="mt-4 border-t border-white/5 pt-3">
+                        <Text className="text-sm font-medium text-neutral-200 mb-2">
+                          Simulation Coordinates Source
+                        </Text>
+                        <View className="flex-row gap-2 mt-1">
+                          <TouchableOpacity
+                            onPress={() => setBypassVideoPositionSource("truth")}
+                            className={`px-3 py-1.5 rounded-lg border ${
+                              bypassVideoPositionSource === "truth"
+                                ? "bg-[#007AFF] border-[#007AFF]"
+                                : "bg-transparent border-white/10"
+                            }`}
+                          >
+                            <Text
+                              className={`text-xs font-semibold ${bypassVideoPositionSource === "truth" ? "text-white" : "text-neutral-300"}`}
+                            >
+                              Ground Truth
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => setBypassVideoPositionSource("model")}
+                            className={`px-3 py-1.5 rounded-lg border ${
+                              bypassVideoPositionSource === "model"
+                                ? "bg-[#007AFF] border-[#007AFF]"
+                                : "bg-transparent border-white/10"
+                            }`}
+                          >
+                            <Text
+                              className={`text-xs font-semibold ${bypassVideoPositionSource === "model" ? "text-white" : "text-neutral-300"}`}
+                            >
+                              Model Prediction
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Model Variant Selector */}
+                    {bypassVideoSessionId && bypassVideoPositionSource === "model" && (
+                      <View className="mt-4 border-t border-white/5 pt-3">
+                        <Text className="text-sm font-medium text-neutral-200 mb-2">
+                          Select Model Variant
+                        </Text>
+
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() =>
+                            setVideoModelSelectorOpen(!videoModelSelectorOpen)
+                          }
+                          className="flex-row items-center justify-between rounded-xl border border-white/10 bg-white/5 px-4 py-3"
+                        >
+                          <View className="flex-row items-center gap-2">
+                            <View className="w-2 h-2 rounded-full bg-[#007AFF]" />
+                            <Text className="text-xs font-semibold text-neutral-200">
+                              {getGatConfig(bypassVideoModel as GatVariant).label}
+                            </Text>
+                          </View>
+                          <Ionicons
+                            name={videoModelSelectorOpen ? "chevron-up" : "chevron-down"}
+                            size={16}
+                            color="#94a3b8"
+                          />
+                        </TouchableOpacity>
+
+                        {videoModelSelectorOpen && (
+                          <View className="rounded-xl border border-white/10 bg-slate-900/90 p-1.5 gap-1 mt-1">
+                            {GAT_VARIANTS.map((v) => {
+                              const isSelected = bypassVideoModel === v;
+                              const cfg = getGatConfig(v);
+                              return (
+                                <TouchableOpacity
+                                  key={v}
+                                  onPress={() => {
+                                    setBypassVideoModel(v);
+                                    setVideoModelSelectorOpen(false);
+                                  }}
+                                  className={`flex-row items-center justify-between rounded-lg px-3 py-2.5 ${
+                                    isSelected ? "bg-[#007AFF]/20" : "bg-transparent"
+                                  }`}
+                                >
+                                  <View className="flex-1 pr-4">
+                                    <Text
+                                      className={`text-xs font-bold ${isSelected ? "text-[#007AFF]" : "text-neutral-200"}`}
+                                    >
+                                      {cfg.label}
+                                    </Text>
+                                    <Text className="text-neutral-500 text-[9px] mt-0.5">
+                                      Window: {cfg.windowSize}{" "}
+                                      {cfg.windowMode === "time" ? "ms" : "rows"}
+                                      {cfg.usesWifi ? " • WiFi" : " • No WiFi"}
+                                      {cfg.useBeaconYPos ? " • Coordinates" : ""}
+                                    </Text>
+                                  </View>
+                                  {isSelected && (
+                                    <Ionicons
+                                      name="checkmark"
+                                      size={14}
+                                      color="#007AFF"
+                                    />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </View>
+                    )}
+
+                    {/* Model Smoother Picker */}
+                    {bypassVideoSessionId && bypassVideoPositionSource === "model" && (
+                      <View className="mt-4 border-t border-white/5 pt-3">
+                        <Text className="text-sm font-medium text-neutral-200 mb-2">
+                          Model Smoother Mode
+                        </Text>
+                        <View className="flex-row gap-2 mt-1">
+                          <TouchableOpacity
+                            onPress={() => setBypassVideoModelSmoother("pdr")}
+                            className={`px-3 py-1.5 rounded-lg border ${
+                              bypassVideoModelSmoother === "pdr"
+                                ? "bg-[#007AFF] border-[#007AFF]"
+                                : "bg-transparent border-white/10"
+                            }`}
+                          >
+                            <Text
+                              className={`text-xs font-semibold ${bypassVideoModelSmoother === "pdr" ? "text-white" : "text-neutral-300"}`}
+                            >
+                              PDR Kalman
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => setBypassVideoModelSmoother("kalman")}
+                            className={`px-3 py-1.5 rounded-lg border ${
+                              bypassVideoModelSmoother === "kalman"
+                                ? "bg-[#007AFF] border-[#007AFF]"
+                                : "bg-transparent border-white/10"
+                            }`}
+                          >
+                            <Text
+                              className={`text-xs font-semibold ${bypassVideoModelSmoother === "kalman" ? "text-white" : "text-neutral-300"}`}
+                            >
+                              Kalman Filtered
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => setBypassVideoModelSmoother("rts")}
+                            className={`px-3 py-1.5 rounded-lg border ${
+                              bypassVideoModelSmoother === "rts"
+                                ? "bg-[#007AFF] border-[#007AFF]"
+                                : "bg-transparent border-white/10"
+                            }`}
+                          >
+                            <Text
+                              className={`text-xs font-semibold ${bypassVideoModelSmoother === "rts" ? "text-white" : "text-neutral-300"}`}
+                            >
+                              RTS Smoothed
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Launch Simulation Button */}
+                    {bypassVideoSessionId && (
+                      <View className="mt-5 border-t border-white/5 pt-4">
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            router.push("/navigation" as any);
+                          }}
+                          className="flex-row items-center justify-center gap-2 bg-[#007AFF] rounded-xl py-3 shadow-md"
+                        >
+                          <Ionicons name="play" size={18} color="white" />
+                          <Text className="text-white font-bold text-sm">
+                            Launch Simulation in Navigation
+                          </Text>
+                        </TouchableOpacity>
+                        <Text className="text-neutral-400 text-center text-xs mt-2 px-4 leading-relaxed">
+                          Simulation will automatically start playing on the Navigation
+                          screen.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
           </View>
         </Card>
 

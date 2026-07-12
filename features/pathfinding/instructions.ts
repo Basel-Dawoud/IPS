@@ -53,7 +53,10 @@ const iconFor = (d: NavStep["direction"]): string => {
   }
 };
 
-export function pathToSteps(path: PathCell[]): NavStep[] {
+export function pathToSteps(
+  path: PathCell[],
+  portalTypeByCell?: Map<string, "STAIRS" | "ELEVATOR">,
+): NavStep[] {
   if (path.length < 2) {
     const [f, r, c] = path[0] ?? [0, 0, 0];
     return [
@@ -111,12 +114,17 @@ export function pathToSteps(path: PathCell[]): NavStep[] {
 
     if (p.f !== cur.f) {
       flush(cur);
-      // Label by the transition cell we're standing on (elevator vs stairs).
+      // Label by the portal type at the transition cell (elevator vs stairs);
+      // fall back to the grid cell code for defensiveness.
+      const cr = Math.round(cur.y / CELL_SIZE);
+      const cc = Math.round(cur.x / CELL_SIZE);
+      const portalType = portalTypeByCell?.get(`${cur.f},${cr},${cc}`);
       const og = getGrid(cur.f);
-      const viaElevator = og
-        ? cellAt(og, Math.round(cur.y / CELL_SIZE), Math.round(cur.x / CELL_SIZE)) ===
-          ELEVATOR
-        : false;
+      const viaElevator = portalType
+        ? portalType === "ELEVATOR"
+        : og
+          ? cellAt(og, cr, cc) === ELEVATOR
+          : false;
       out.push({
         text: viaElevator
           ? `Take the elevator to floor ${p.f}`
@@ -175,6 +183,9 @@ export function pathToSteps(path: PathCell[]): NavStep[] {
 }
 
 /** Legacy helper: returns the old single-string format for backward compat. */
-export function pathToInstructions(path: PathCell[]): string {
-  return pathToSteps(path).map((s) => s.text).join(". ");
+export function pathToInstructions(
+  path: PathCell[],
+  portalTypeByCell?: Map<string, "STAIRS" | "ELEVATOR">,
+): string {
+  return pathToSteps(path, portalTypeByCell).map((s) => s.text).join(". ");
 }

@@ -1,5 +1,5 @@
-import { useMemo, useEffect, useState } from "react";
-import { View } from "react-native";
+import { useMemo, useEffect, useState, useRef, useCallback } from "react";
+import { View, StyleSheet } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
@@ -21,6 +21,7 @@ import Svg, {
 import type { PathPoint } from "./types";
 import type { Poi } from "@/features/poi/types";
 import type { VectorMap, VectorRect } from "@/features/buildings/types";
+import type { BlockedZone } from "@/features/emergency/use-emergency-alert";
 import { computePoiArea, type PoiAreaM } from "@/features/pathfinding/poi-area";
 import { resolveAssetSource } from "@/lib/api-client";
 
@@ -52,6 +53,10 @@ interface FloorMapProps {
   pois?: Poi[];
   /** The selected destination POI id (its room is highlighted). */
   destinationPoiId?: string | null;
+  /** Emergency-blocked areas (all floors — filtered to the current floor here). */
+  blockedZones?: BlockedZone[];
+  /** Emergency-blocked STAIRS/ELEVATOR POI ids — drawn with a hazard overlay. */
+  blockedPoiIds?: string[];
   onSelectPoi?: (poi: Poi) => void;
   currentFloorLevel?: number;
   displayWidth: number;
@@ -129,6 +134,8 @@ export function FloorMap({
   path,
   pois,
   destinationPoiId,
+  blockedZones,
+  blockedPoiIds,
   onSelectPoi,
   currentFloorLevel = 0,
   displayWidth,
@@ -190,6 +197,16 @@ export function FloorMap({
     [pois, currentFloorLevel],
   );
 
+  const floorBlockedZones = useMemo(
+    () => (blockedZones ?? []).filter((z) => z.floorLevel === currentFloorLevel),
+    [blockedZones, currentFloorLevel],
+  );
+
+  const blockedPoiIdSet = useMemo(
+    () => new Set(blockedPoiIds ?? []),
+    [blockedPoiIds],
+  );
+
   const destPoi = useMemo(
     () => floorPois.find((p) => p.id === destinationPoiId) ?? null,
     [floorPois, destinationPoiId],
@@ -214,11 +231,26 @@ export function FloorMap({
     return m;
   }, [floorPois, currentFloorLevel]);
 
-  const polyline = useMemo(() => {
-    if (!path || path.length < 2) return null;
-    const onFloor = path.filter((p) => p.floorLevel === currentFloorLevel);
-    if (onFloor.length < 2) return null;
-    return onFloor.map((p) => `${p.x},${p.y}`).join(" ");
+  // One polyline per CONTIGUOUS run of on-floor points. A multi-floor route can
+  // visit this floor more than once (e.g. detour down stairs and back), so we
+  // must NOT join those runs — that would draw a straight line cutting across
+  // the gap/blockage they detoured around.
+  const polylines = useMemo(() => {
+    if (!path || path.length < 2) return [];
+    const runs: string[] = [];
+    let cur: PathPoint[] = [];
+    for (const p of path) {
+      if (p.floorLevel === currentFloorLevel) {
+        cur.push(p);
+      } else if (cur.length >= 2) {
+        runs.push(cur.map((q) => `${q.x},${q.y}`).join(" "));
+        cur = [];
+      } else {
+        cur = [];
+      }
+    }
+    if (cur.length >= 2) runs.push(cur.map((q) => `${q.x},${q.y}`).join(" "));
+    return runs;
   }, [path, currentFloorLevel]);
 
   // --- Pinch-to-zoom + pan, clamped so the map can't be lost off-screen. ---
@@ -360,6 +392,398 @@ export function FloorMap({
     ],
   }));
 
+  // Route POI presses through a ref so the memoized scene below doesn't rebuild
+  // just because the parent passed a new onSelectPoi identity this render.
+  const onSelectPoiRef = useRef(onSelectPoi);
+  useEffect(() => {
+    onSelectPoiRef.current = onSelectPoi;
+  }, [onSelectPoi]);
+  const handlePoiPress = useCallback((poi: Poi) => {
+    onSelectPoiRef.current?.(poi);
+  }, []);
+
+  // Heavy, position-INDEPENDENT scene: floor geometry, POI footprints, the
+  // route, and every POI marker + wrapped label. Memoized so it is rebuilt only
+  // when the floor / POIs / destination / route / rotation change — NOT when the
+  // live user dot moves. This is what keeps simulator playback (position updates
+  // ~20×/sec) cheap: only the small dot below re-renders each frame.
+  const staticScene = useMemo(
+    () => (
+      <>
+        {vectorMap ? (
+          <>
+            {/* Floor background */}
+            <Rect x={0} y={0} width={viewW} height={viewH} fill="#0f172a" />
+            {vectorMap.corridors.map((r, i) => (
+              <Rect
+                key={`co${i}`}
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                fill="#1e293b"
+              />
+            ))}
+            {/* Rooms (destination highlighted) */}
+            {vectorMap.rooms.map((room, ri) => {
+              const highlighted = destPoi
+                ? room.rects.some((rc) => pointInRect(destPoi.x, destPoi.y, rc))
+                : false;
+              return (
+                <G key={`rm${ri}`}>
+                  {room.rects.map((rc, i) => (
+                    <Rect
+                      key={i}
+                      x={rc.x}
+                      y={rc.y}
+                      width={rc.w}
+                      height={rc.h}
+                      fill={highlighted ? "#1d4ed8" : "#243044"}
+                      opacity={highlighted ? 0.9 : 1}
+                    />
+                  ))}
+                </G>
+              );
+            })}
+            {/* Walls */}
+            {vectorMap.walls.map((r, i) => (
+              <Rect
+                key={`w${i}`}
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                fill="#475569"
+              />
+            ))}
+            {/* Stairs / elevators */}
+            {vectorMap.stairs.map((r, i) => (
+              <Rect
+                key={`st${i}`}
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                fill="#f59e0b"
+              />
+            ))}
+            {vectorMap.elevators.map((r, i) => (
+              <Rect
+                key={`el${i}`}
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                fill="#10b981"
+              />
+            ))}
+          </>
+        ) : mapUrl ? (
+          <SvgImage
+            href={resolveAssetSource(mapUrl)}
+            x={0}
+            y={0}
+            width={viewW}
+            height={viewH}
+            preserveAspectRatio="xMidYMid slice"
+          />
+        ) : null}
+
+        {/* Emergency-blocked areas — hazard overlay drawn above the floor plan
+            so an inaccessible zone is unmistakable at a glance. */}
+        {floorBlockedZones.map((z, i) => {
+          const cx = z.x + z.w / 2;
+          const cy = z.y + z.h / 2;
+          const availW = (swap ? z.h : z.w) * 0.85;
+          const fs = Math.max(s * 0.009, Math.min(s * 0.017, availW / 11));
+          const maxChars = Math.max(4, Math.floor(availW / (fs * 0.6)));
+          const lines = wrapLabel("NOT ACCESSIBLE", maxChars);
+          const lineH = fs * 1.15;
+          const firstBaseline = cy - ((lines.length - 1) * lineH) / 2;
+          return (
+            <G key={`bz-${i}`}>
+              <Rect
+                x={z.x}
+                y={z.y}
+                width={z.w}
+                height={z.h}
+                fill="#dc2626"
+                fillOpacity={0.38}
+                stroke="#ef4444"
+                strokeWidth={s * 0.003}
+                strokeDasharray={`${s * 0.01},${s * 0.007}`}
+              />
+              <G transform={rot ? `rotate(${-rot}, ${cx}, ${cy})` : undefined}>
+                {lines.map((ln, li) => (
+                  <G
+                    key={li}
+                    transform={`translate(${cx}, ${firstBaseline + li * lineH}) scale(${fs / LABEL_BASE_FS})`}
+                  >
+                    <SvgText
+                      x={0}
+                      y={0}
+                      fontSize={LABEL_BASE_FS}
+                      fontWeight="700"
+                      textAnchor="middle"
+                      stroke="#0b1220"
+                      strokeWidth={LABEL_BASE_FS * 0.24}
+                      fill="#0b1220"
+                      opacity={0.85}
+                    >
+                      {ln}
+                    </SvgText>
+                    <SvgText
+                      x={0}
+                      y={0}
+                      fontSize={LABEL_BASE_FS}
+                      fontWeight="700"
+                      textAnchor="middle"
+                      fill="#fecaca"
+                    >
+                      {ln}
+                    </SvgText>
+                  </G>
+                ))}
+              </G>
+            </G>
+          );
+        })}
+
+        {/* POI zones, under the route. Only the DESTINATION's zone is
+            visible (highlight); other zones stay invisible but remain
+            tappable and still drive label placement. */}
+        {floorPois.map((poi) => {
+          const area = poiAreas.get(poi.id);
+          if (!area) return null;
+          const isDest = poi.id === destinationPoiId;
+          return (
+            <Rect
+              key={`area-${poi.id}`}
+              x={area.x}
+              y={area.y}
+              width={area.w}
+              height={area.h}
+              rx={s * 0.005}
+              fill={isDest ? "#1d4ed8" : "transparent"}
+              fillOpacity={isDest ? 0.4 : 1}
+              stroke={isDest ? "#60a5fa" : "none"}
+              strokeOpacity={0.9}
+              strokeWidth={isDest ? s * 0.0015 : 0}
+              onPress={() => handlePoiPress(poi)}
+            />
+          );
+        })}
+
+        {/* Route — one polyline per on-floor run (never joined across floors). */}
+        {polylines.map((pts, i) => (
+          <Polyline
+            key={`route-${i}`}
+            points={pts}
+            stroke="#60a5fa"
+            strokeWidth={s * 0.01}
+            fill="none"
+          />
+        ))}
+
+        {/* POI markers + labels. Positions rotate with the scene; labels are
+            counter-rotated so they stay upright. POIs with a grid-derived
+            area get the name wrapped INSIDE the footprint; open-space POIs
+            keep a dot with a compact label above it. */}
+        {floorPois.map((poi) => {
+          const isDest = poi.id === destinationPoiId;
+          const area = poiAreas.get(poi.id) ?? null;
+
+          // Label geometry. The counter-rotated label occupies the area's
+          // on-screen extent, so its width/height swap with the rotation.
+          const cx = area ? area.x + area.w / 2 : poi.x;
+          const cy = area ? area.y + area.h / 2 : poi.y;
+          const availW = area ? (swap ? area.h : area.w) * 0.92 : s * 0.14;
+          const availH = area ? (swap ? area.w : area.h) * 0.8 : s * 0.05;
+          const fs = area
+            ? Math.max(s * 0.008, Math.min(s * 0.018, availH / 3.2, availW / 6.5))
+            : s * 0.013;
+          const maxChars = Math.max(4, Math.floor(availW / (fs * 0.58)));
+          const lines = wrapLabel(poi.name, maxChars);
+          const lineH = fs * 1.2;
+
+          const iconSz = area ? Math.min(fs * 3.2, availH * 0.55) : iconSize * 1.5;
+          const showIcon =
+            !!poi.iconUrl &&
+            (!area || availH > lines.length * lineH + iconSz * 1.05);
+
+          // Vertical block layout: [icon] + lines, centered in the area,
+          // or stacked above the dot for open-space POIs.
+          let iconCy = poi.y;
+          let firstBaseline: number;
+          if (area) {
+            const blockH =
+              lines.length * lineH + (showIcon ? iconSz + fs * 0.3 : 0);
+            const blockTop = cy - blockH / 2;
+            iconCy = blockTop + iconSz / 2;
+            firstBaseline =
+              blockTop + (showIcon ? iconSz + fs * 0.3 : 0) + fs * 0.85;
+          } else {
+            firstBaseline =
+              poi.y -
+              (showIcon ? iconSz * 0.62 : s * 0.02) -
+              (lines.length - 1) * lineH;
+          }
+
+          return (
+            <G key={poi.id} onPress={() => handlePoiPress(poi)}>
+              {/* large transparent hit target (dot POIs only — areas are pressable) */}
+              {!area ? (
+                <Circle cx={poi.x} cy={poi.y} r={s * 0.03} fill="transparent" />
+              ) : null}
+              <G transform={rot ? `rotate(${-rot}, ${cx}, ${cy})` : undefined}>
+                {showIcon ? (
+                  <G
+                    transform={`translate(${area ? cx : poi.x}, ${area ? iconCy : poi.y}) scale(${iconSz / 96})`}
+                  >
+                    <Defs>
+                      <ClipPath id={`poi-clip-${poi.id}`}>
+                        <Circle cx={0} cy={0} r={48} />
+                      </ClipPath>
+                    </Defs>
+                    <SvgImage
+                      href={resolveAssetSource(poi.iconUrl!)}
+                      x={-48}
+                      y={-48}
+                      width={96}
+                      height={96}
+                      preserveAspectRatio="xMidYMid meet"
+                      clipPath={`url(#poi-clip-${poi.id})`}
+                    />
+                  </G>
+                ) : !area ? (
+                  isDest ? (
+                    <Path
+                      d="M 0 0 C -4 -4, -8 -8, -8 -12 A 8 8 0 1 1 8 -12 C 8 -8, 4 -4, 0 0 Z M 0 -15 A 3 3 0 1 0 0 -9 A 3 3 0 1 0 0 -15 Z"
+                      fill="#f87171"
+                      stroke="#0b1220"
+                      strokeWidth={1.2}
+                      transform={`translate(${poi.x}, ${poi.y}) scale(${s * 0.0022})`}
+                    />
+                  ) : (
+                    <Circle
+                      cx={poi.x}
+                      cy={poi.y}
+                      r={s * 0.012}
+                      fill="#38bdf8"
+                      stroke="#0b1220"
+                      strokeWidth={s * 0.003}
+                    />
+                  )
+                ) : null}
+                {/* destination keeps a pin marking the exact route endpoint */}
+                {area && isDest ? (
+                  <Path
+                    d="M 0 0 C -4 -4, -8 -8, -8 -12 A 8 8 0 1 1 8 -12 C 8 -8, 4 -4, 0 0 Z M 0 -15 A 3 3 0 1 0 0 -9 A 3 3 0 1 0 0 -15 Z"
+                    fill="#f87171"
+                    stroke="#0b1220"
+                    strokeWidth={1.2}
+                    transform={`translate(${poi.x}, ${poi.y}) scale(${s * 0.0018})`}
+                  />
+                ) : null}
+                {lines.map((ln, i) => (
+                  // Lay out at LABEL_BASE_FS and scale down — see the
+                  // constant's comment (tiny font sizes break kerning).
+                  <G
+                    key={i}
+                    transform={`translate(${cx}, ${firstBaseline + i * lineH}) scale(${fs / LABEL_BASE_FS})`}
+                  >
+                    {/* halo pass for readability over any background */}
+                    <SvgText
+                      x={0}
+                      y={0}
+                      fontSize={LABEL_BASE_FS}
+                      fontWeight="600"
+                      textAnchor="middle"
+                      stroke="#0b1220"
+                      strokeWidth={LABEL_BASE_FS * 0.22}
+                      fill="#0b1220"
+                      opacity={0.85}
+                    >
+                      {ln}
+                    </SvgText>
+                    <SvgText
+                      x={0}
+                      y={0}
+                      fontSize={LABEL_BASE_FS}
+                      fontWeight="600"
+                      textAnchor="middle"
+                      fill="#e2e8f0"
+                    >
+                      {ln}
+                    </SvgText>
+                  </G>
+                ))}
+              </G>
+            </G>
+          );
+        })}
+
+        {/* Emergency-blocked stairs/elevators — hazard ring + label drawn above
+            the normal marker so a blocked transition can't be mistaken for a
+            usable one. */}
+        {floorPois
+          .filter((poi) => blockedPoiIdSet.has(poi.id))
+          .map((poi) => {
+            const area = poiAreas.get(poi.id);
+            const r = area ? Math.max(area.w, area.h) / 2 + s * 0.012 : s * 0.03;
+            // Stairs/elevators just get a red "disabled" overlay — no label
+            // (the crossed-out red styling is enough; only areas are labeled).
+            return (
+              <G key={`blocked-poi-${poi.id}`}>
+                {area ? (
+                  <Rect
+                    x={area.x}
+                    y={area.y}
+                    width={area.w}
+                    height={area.h}
+                    rx={s * 0.005}
+                    fill="#dc2626"
+                    fillOpacity={0.42}
+                    stroke="#ef4444"
+                    strokeWidth={s * 0.004}
+                    strokeDasharray={`${s * 0.01},${s * 0.007}`}
+                  />
+                ) : (
+                  <Circle
+                    cx={poi.x}
+                    cy={poi.y}
+                    r={r}
+                    fill="#dc2626"
+                    fillOpacity={0.38}
+                    stroke="#ef4444"
+                    strokeWidth={s * 0.004}
+                  />
+                )}
+              </G>
+            );
+          })}
+      </>
+    ),
+    [
+      vectorMap,
+      mapUrl,
+      floorBlockedZones,
+      blockedPoiIdSet,
+      viewW,
+      viewH,
+      destPoi,
+      s,
+      floorPois,
+      poiAreas,
+      destinationPoiId,
+      polylines,
+      rot,
+      swap,
+      iconSize,
+      handlePoiPress,
+    ],
+  );
+
   return (
     <View
       style={{ width: displayWidth, height: displayHeight }}
@@ -369,269 +793,36 @@ export function FloorMap({
         <Animated.View
           style={[{ width: displayWidth, height: displayHeight }, animatedStyle]}
         >
-          <Svg
-            viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
-            width={displayWidth}
-            height={displayHeight}
+          {/* Static map layer — rasterized to a GPU texture so pan/zoom/recenter
+              transforms move the cached texture instead of re-rasterizing the whole
+              SVG scene every frame (the main cause of laggy gestures on Android). */}
+          <View
+            style={StyleSheet.absoluteFill}
+            renderToHardwareTextureAndroid
+            shouldRasterizeIOS
           >
-            {/* Full-extent background so expanded viewBox area isn't transparent */}
-            <Rect x={vbX} y={vbY} width={vbW} height={vbH} fill="#0f172a" />
-            <G transform={sceneTransform}>
-              {vectorMap ? (
-                <>
-                  {/* Floor background */}
-                  <Rect x={0} y={0} width={viewW} height={viewH} fill="#0f172a" />
-                  {vectorMap.corridors.map((r, i) => (
-                    <Rect
-                      key={`co${i}`}
-                      x={r.x}
-                      y={r.y}
-                      width={r.w}
-                      height={r.h}
-                      fill="#1e293b"
-                    />
-                  ))}
-                  {/* Rooms (destination highlighted) */}
-                  {vectorMap.rooms.map((room, ri) => {
-                    const highlighted = destPoi
-                      ? room.rects.some((rc) => pointInRect(destPoi.x, destPoi.y, rc))
-                      : false;
-                    return (
-                      <G key={`rm${ri}`}>
-                        {room.rects.map((rc, i) => (
-                          <Rect
-                            key={i}
-                            x={rc.x}
-                            y={rc.y}
-                            width={rc.w}
-                            height={rc.h}
-                            fill={highlighted ? "#1d4ed8" : "#243044"}
-                            opacity={highlighted ? 0.9 : 1}
-                          />
-                        ))}
-                      </G>
-                    );
-                  })}
-                  {/* Walls */}
-                  {vectorMap.walls.map((r, i) => (
-                    <Rect
-                      key={`w${i}`}
-                      x={r.x}
-                      y={r.y}
-                      width={r.w}
-                      height={r.h}
-                      fill="#475569"
-                    />
-                  ))}
-                  {/* Stairs / elevators */}
-                  {vectorMap.stairs.map((r, i) => (
-                    <Rect
-                      key={`st${i}`}
-                      x={r.x}
-                      y={r.y}
-                      width={r.w}
-                      height={r.h}
-                      fill="#f59e0b"
-                    />
-                  ))}
-                  {vectorMap.elevators.map((r, i) => (
-                    <Rect
-                      key={`el${i}`}
-                      x={r.x}
-                      y={r.y}
-                      width={r.w}
-                      height={r.h}
-                      fill="#10b981"
-                    />
-                  ))}
-                </>
-              ) : mapUrl ? (
-                <SvgImage
-                  href={resolveAssetSource(mapUrl)}
-                  x={0}
-                  y={0}
-                  width={viewW}
-                  height={viewH}
-                  preserveAspectRatio="xMidYMid slice"
-                />
-              ) : null}
+            <Svg
+              viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+              width={displayWidth}
+              height={displayHeight}
+            >
+              {/* Full-extent background so expanded viewBox area isn't transparent */}
+              <Rect x={vbX} y={vbY} width={vbW} height={vbH} fill="#0f172a" />
+              <G transform={sceneTransform}>{staticScene}</G>
+            </Svg>
+          </View>
 
-              {/* POI zones, under the route. Only the DESTINATION's zone is
-                  visible (highlight); other zones stay invisible but remain
-                  tappable and still drive label placement. */}
-              {floorPois.map((poi) => {
-                const area = poiAreas.get(poi.id);
-                if (!area) return null;
-                const isDest = poi.id === destinationPoiId;
-                return (
-                  <Rect
-                    key={`area-${poi.id}`}
-                    x={area.x}
-                    y={area.y}
-                    width={area.w}
-                    height={area.h}
-                    rx={s * 0.005}
-                    fill={isDest ? "#1d4ed8" : "transparent"}
-                    fillOpacity={isDest ? 0.4 : 1}
-                    stroke={isDest ? "#60a5fa" : "none"}
-                    strokeOpacity={0.9}
-                    strokeWidth={isDest ? s * 0.0015 : 0}
-                    onPress={onSelectPoi ? () => onSelectPoi(poi) : undefined}
-                  />
-                );
-              })}
-
-              {/* Route */}
-              {polyline ? (
-                <Polyline
-                  points={polyline}
-                  stroke="#60a5fa"
-                  strokeWidth={s * 0.01}
-                  fill="none"
-                />
-              ) : null}
-
-              {/* POI markers + labels. Positions rotate with the scene; labels are
-                  counter-rotated so they stay upright. POIs with a grid-derived
-                  area get the name wrapped INSIDE the footprint; open-space POIs
-                  keep a dot with a compact label above it. */}
-              {floorPois.map((poi) => {
-                const isDest = poi.id === destinationPoiId;
-                const area = poiAreas.get(poi.id) ?? null;
-
-                // Label geometry. The counter-rotated label occupies the area's
-                // on-screen extent, so its width/height swap with the rotation.
-                const cx = area ? area.x + area.w / 2 : poi.x;
-                const cy = area ? area.y + area.h / 2 : poi.y;
-                const availW = area ? (swap ? area.h : area.w) * 0.92 : s * 0.14;
-                const availH = area ? (swap ? area.w : area.h) * 0.8 : s * 0.05;
-                const fs = area
-                  ? Math.max(s * 0.008, Math.min(s * 0.018, availH / 3.2, availW / 6.5))
-                  : s * 0.013;
-                const maxChars = Math.max(4, Math.floor(availW / (fs * 0.58)));
-                const lines = wrapLabel(poi.name, maxChars);
-                const lineH = fs * 1.2;
-
-                const iconSz = area ? Math.min(fs * 3.2, availH * 0.55) : iconSize * 1.5;
-                const showIcon =
-                  !!poi.iconUrl &&
-                  (!area || availH > lines.length * lineH + iconSz * 1.05);
-
-                // Vertical block layout: [icon] + lines, centered in the area,
-                // or stacked above the dot for open-space POIs.
-                let iconCy = poi.y;
-                let firstBaseline: number;
-                if (area) {
-                  const blockH =
-                    lines.length * lineH + (showIcon ? iconSz + fs * 0.3 : 0);
-                  const blockTop = cy - blockH / 2;
-                  iconCy = blockTop + iconSz / 2;
-                  firstBaseline =
-                    blockTop + (showIcon ? iconSz + fs * 0.3 : 0) + fs * 0.85;
-                } else {
-                  firstBaseline =
-                    poi.y -
-                    (showIcon ? iconSz * 0.62 : s * 0.02) -
-                    (lines.length - 1) * lineH;
-                }
-
-                return (
-                  <G
-                    key={poi.id}
-                    onPress={onSelectPoi ? () => onSelectPoi(poi) : undefined}
-                  >
-                    {/* large transparent hit target (dot POIs only — areas are pressable) */}
-                    {!area ? (
-                      <Circle cx={poi.x} cy={poi.y} r={s * 0.03} fill="transparent" />
-                    ) : null}
-                    <G transform={rot ? `rotate(${-rot}, ${cx}, ${cy})` : undefined}>
-                      {showIcon ? (
-                        <G
-                          transform={`translate(${area ? cx : poi.x}, ${area ? iconCy : poi.y}) scale(${iconSz / 96})`}
-                        >
-                          <Defs>
-                            <ClipPath id={`poi-clip-${poi.id}`}>
-                              <Circle cx={0} cy={0} r={48} />
-                            </ClipPath>
-                          </Defs>
-                          <SvgImage
-                            href={resolveAssetSource(poi.iconUrl!)}
-                            x={-48}
-                            y={-48}
-                            width={96}
-                            height={96}
-                            preserveAspectRatio="xMidYMid meet"
-                            clipPath={`url(#poi-clip-${poi.id})`}
-                          />
-                        </G>
-                      ) : !area ? (
-                        isDest ? (
-                          <Path
-                            d="M 0 0 C -4 -4, -8 -8, -8 -12 A 8 8 0 1 1 8 -12 C 8 -8, 4 -4, 0 0 Z M 0 -15 A 3 3 0 1 0 0 -9 A 3 3 0 1 0 0 -15 Z"
-                            fill="#f87171"
-                            stroke="#0b1220"
-                            strokeWidth={1.2}
-                            transform={`translate(${poi.x}, ${poi.y}) scale(${s * 0.0022})`}
-                          />
-                        ) : (
-                          <Circle
-                            cx={poi.x}
-                            cy={poi.y}
-                            r={s * 0.012}
-                            fill="#38bdf8"
-                            stroke="#0b1220"
-                            strokeWidth={s * 0.003}
-                          />
-                        )
-                      ) : null}
-                      {/* destination keeps a pin marking the exact route endpoint */}
-                      {area && isDest ? (
-                        <Path
-                          d="M 0 0 C -4 -4, -8 -8, -8 -12 A 8 8 0 1 1 8 -12 C 8 -8, 4 -4, 0 0 Z M 0 -15 A 3 3 0 1 0 0 -9 A 3 3 0 1 0 0 -15 Z"
-                          fill="#f87171"
-                          stroke="#0b1220"
-                          strokeWidth={1.2}
-                          transform={`translate(${poi.x}, ${poi.y}) scale(${s * 0.0018})`}
-                        />
-                      ) : null}
-                      {lines.map((ln, i) => (
-                        // Lay out at LABEL_BASE_FS and scale down — see the
-                        // constant's comment (tiny font sizes break kerning).
-                        <G
-                          key={i}
-                          transform={`translate(${cx}, ${firstBaseline + i * lineH}) scale(${fs / LABEL_BASE_FS})`}
-                        >
-                          {/* halo pass for readability over any background */}
-                          <SvgText
-                            x={0}
-                            y={0}
-                            fontSize={LABEL_BASE_FS}
-                            fontWeight="600"
-                            textAnchor="middle"
-                            stroke="#0b1220"
-                            strokeWidth={LABEL_BASE_FS * 0.22}
-                            fill="#0b1220"
-                            opacity={0.85}
-                          >
-                            {ln}
-                          </SvgText>
-                          <SvgText
-                            x={0}
-                            y={0}
-                            fontSize={LABEL_BASE_FS}
-                            fontWeight="600"
-                            textAnchor="middle"
-                            fill="#e2e8f0"
-                          >
-                            {ln}
-                          </SvgText>
-                        </G>
-                      ))}
-                    </G>
-                  </G>
-                );
-              })}
-
+          {/* Dynamic overlay — user dot + heading cone + friend marker. Kept on a
+              separate, non-rasterized layer so their frequent updates (live tracking /
+              compass) don't invalidate the static map's cached texture. pointerEvents
+              none lets POI taps fall through to the static layer's onPress handlers. */}
+          <View style={StyleSheet.absoluteFill} pointerEvents="none">
+            <Svg
+              viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+              width={displayWidth}
+              height={displayHeight}
+            >
+              <G transform={sceneTransform}>
               {/* User position — Google-Maps-style dot + direction cone. The
                   cone lives inside the scene <G>, so the floor rotationDeg is
                   applied automatically; headingMapDeg is already offset-corrected
@@ -648,7 +839,9 @@ export function FloorMap({
                   />
                   {/* Direction cone (only when we have a heading) */}
                   {headingMapDeg != null ? (
-                    <G transform={`rotate(${headingMapDeg}, ${position.x}, ${position.y})`}>
+                    <G
+                      transform={`rotate(${headingMapDeg}, ${position.x}, ${position.y})`}
+                    >
                       <Path
                         d={wedgePath(
                           position.x,
@@ -679,8 +872,18 @@ export function FloorMap({
                     fill="#10b981"
                     opacity={0.2}
                   />
-                  <Circle cx={friendMarker.x} cy={friendMarker.y} r={s * 0.013} fill="#ffffff" />
-                  <Circle cx={friendMarker.x} cy={friendMarker.y} r={s * 0.009} fill="#10b981" />
+                  <Circle
+                    cx={friendMarker.x}
+                    cy={friendMarker.y}
+                    r={s * 0.013}
+                    fill="#ffffff"
+                  />
+                  <Circle
+                    cx={friendMarker.x}
+                    cy={friendMarker.y}
+                    r={s * 0.009}
+                    fill="#10b981"
+                  />
                   <G
                     transform={
                       rot
@@ -713,8 +916,9 @@ export function FloorMap({
                   </G>
                 </>
               ) : null}
-            </G>
-          </Svg>
+              </G>
+            </Svg>
+          </View>
         </Animated.View>
       </GestureDetector>
     </View>

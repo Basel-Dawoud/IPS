@@ -128,10 +128,12 @@ export function useMotionSensors(opts?: {
   motionIntervalMs?: number;
   magIntervalMs?: number;
   barometerIntervalMs?: number;
+  enableLiveUpdates?: boolean;
 }): UseMotionSensorsResult {
   const motionIntervalMs = opts?.motionIntervalMs ?? 50;
   const magIntervalMs = opts?.magIntervalMs ?? 50;
   const barometerIntervalMs = opts?.barometerIntervalMs ?? 200;
+  const enableLiveUpdates = opts?.enableLiveUpdates ?? true;
 
   const latestRef = useRef<SensorSnapshot>({ ...DEFAULT_SNAPSHOT });
   const [live, setLive] = useState<SensorSnapshot>({ ...DEFAULT_SNAPSHOT });
@@ -377,12 +379,14 @@ export function useMotionSensors(opts?: {
     setAvailability(next);
 
     // UI throttle — copy latestRef into React state every 100 ms.
-    uiTimerRef.current = setInterval(() => {
-      setLive({ ...latestRef.current });
-    }, UI_THROTTLE_MS);
+    if (enableLiveUpdates) {
+      uiTimerRef.current = setInterval(() => {
+        setLive({ ...latestRef.current });
+      }, UI_THROTTLE_MS);
+    }
 
     console.log("[Sensors] started", next);
-  }, [motionIntervalMs, magIntervalMs, barometerIntervalMs, emitRaw]);
+  }, [motionIntervalMs, magIntervalMs, barometerIntervalMs, emitRaw, enableLiveUpdates]);
 
   const stop = useCallback(() => {
     if (!startedRef.current) return;

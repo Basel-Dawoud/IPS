@@ -97,7 +97,9 @@ export default function ShareLandingScreen() {
                   onPress={() =>
                     router.push(
                       `/navigation?buildingId=${share.building!.id}&shareToken=${encodeURIComponent(
-                        shareToken,
+                        // Canonical token (the live socket keys rooms by token);
+                        // the URL param may be a typed code.
+                        share.token ?? shareToken,
                       )}&friendName=${encodeURIComponent(sharerName)}` as any,
                     )
                   }

@@ -10,6 +10,8 @@ import {
   TouchableOpacity,
   Keyboard,
   Animated,
+  Modal,
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -23,10 +25,12 @@ import { setBeaconServiceDataMap } from "@/features/ble/beacon-parsing";
 import { useProximity } from "@/features/proximity/proximity-provider";
 import type { NearbyBuilding } from "@/features/buildings/types";
 import { useBuildingPois } from "@/features/poi/use-building-pois";
-import type { Poi } from "@/features/poi/types";
+import { PoiReviewModal } from "@/features/poi/poi-reviews";
+import type { Poi, PoiReview } from "@/features/poi/types";
 import { findRoute } from "@/features/pathfinding";
 import type { NavStep } from "@/features/pathfinding/instructions";
 import { FloorMap } from "./floor-map";
+import { useTrajectorySimulation } from "./use-trajectory-simulation";
 import { useHeading } from "./use-heading";
 import type { PathPoint } from "./types";
 import { useNavigationTarget } from "@/features/navigation/navigation-target-provider";
@@ -38,17 +42,19 @@ import { useAuth } from "@/features/auth/auth-provider";
 import { useEmergencyAlert } from "@/features/emergency/use-emergency-alert";
 import { useLocationShare } from "@/features/location-sharing/use-location-share";
 import { useLocationPublisher } from "@/features/location-sharing/use-location-publisher";
+import { useMqttTelemetry } from "@/features/telemetry/use-mqtt-telemetry";
 import { useFriendPosition } from "@/features/location-sharing/use-friend-position";
 import { ShareLocationSheet } from "@/features/location-sharing/share-location-sheet";
+import { ShareResultSheet } from "@/features/location-sharing/share-result-sheet";
+import { JoinShareSheet } from "@/features/location-sharing/join-share-sheet";
+import { BypassPositionPad } from "@/features/navigation/bypass-position-pad";
 
 // Fallback coordinate extent (meters) for floors without a vector map.
 const FALLBACK_MAP_WIDTH = 95;
 const FALLBACK_MAP_HEIGHT = 18;
 
-// Bypass coordinates and floor for remote testing.
-const BYPASS_X = 7;
-const BYPASS_Y = 7;
-const BYPASS_FLOOR = 3;
+// How far each bypass stepper tap moves the fake position, in meters.
+const BYPASS_STEP_M = 1;
 
 // The model only outputs the along-corridor coordinate; the cross-corridor
 // position is assumed static on the corridor centerline (meters). The
@@ -105,7 +111,22 @@ export function NavigationScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { target, setTarget } = useNavigationTarget();
-  const { debugMode, bypassEnabled } = useSettings();
+  const {
+    debugMode,
+    bypassEnabled,
+    bypassX,
+    bypassY,
+    bypassFloor,
+    setBypassPosition,
+    showBypassGui,
+    bypassMode,
+  } = useSettings();
+
+  const {
+    simLoading,
+    simError,
+    toggleSimulation,
+  } = useTrajectorySimulation();
   const { user } = useAuth();
   const params = useLocalSearchParams<{
     buildingId?: string;
@@ -118,11 +139,16 @@ export function NavigationScreen() {
   const explicitId = typeof params.buildingId === "string" ? params.buildingId : null;
   // Follow-a-friend mode: entered via a share link (/share/[token]) or the
   // Friends screen. Exactly one of the two identifies who we're watching.
-  const shareToken = typeof params.shareToken === "string" && params.shareToken ? params.shareToken : null;
+  const shareToken =
+    typeof params.shareToken === "string" && params.shareToken ? params.shareToken : null;
   const followFriendUserId =
-    typeof params.friendUserId === "string" && params.friendUserId ? params.friendUserId : null;
+    typeof params.friendUserId === "string" && params.friendUserId
+      ? params.friendUserId
+      : null;
   const friendName =
-    typeof params.friendName === "string" && params.friendName ? params.friendName : "Friend";
+    typeof params.friendName === "string" && params.friendName
+      ? params.friendName
+      : "Friend";
   const { nearestInsideZone, candidates } = useProximity();
 
   // Auto-fall-back to the building the user is physically inside, if any.
@@ -136,24 +162,40 @@ export function NavigationScreen() {
   } else if (nearestInsideZone?.id) {
     stickyAutoIdRef.current = nearestInsideZone.id;
   }
-  const autoSelectedId = explicitId ? null : (nearestInsideZone?.id ?? stickyAutoIdRef.current);
+  const autoSelectedId = explicitId
+    ? null
+    : (nearestInsideZone?.id ?? stickyAutoIdRef.current);
   const effectiveId = explicitId ?? autoSelectedId;
 
   const { data: building } = useBuilding(effectiveId);
   const { data: allPois } = useBuildingPois(effectiveId);
+  // STAIRS/ELEVATOR POIs drive on-device cross-floor transitions in the A*.
+  const transitionPois = useMemo(
+    () => (allPois ?? []).filter((p) => p.type === "STAIRS" || p.type === "ELEVATOR"),
+    [allPois],
+  );
   const positioning = usePositioning({ autoStart: true });
-  const { isEmergencyActive, emergencyData } = useEmergencyAlert(effectiveId, building?.emergencyAlert);
+  const { isEmergencyActive, emergencyData } = useEmergencyAlert(
+    effectiveId,
+    building?.emergencyAlert,
+  );
   const scaleAnim = useRef(new Animated.Value(1)).current;
+
+
 
   // ── Live location sharing ──
   // Sharer side: create/stop a share link + stream my position.
   const locationShare = useLocationShare(effectiveId);
   const [shareSheetOpen, setShareSheetOpen] = useState(false);
+  const [shareResultOpen, setShareResultOpen] = useState(false);
+  const [joinShareOpen, setJoinShareOpen] = useState(false);
   // Viewer side: watch the sharer/friend and optionally route to them.
   const friendWatch = useFriendPosition({ shareToken, friendUserId: followFriendUserId });
   const friendPos = friendWatch.position;
   const [friendFollowing, setFriendFollowing] = useState(false);
-  const lastRoutedFriendRef = useRef<{ x: number; y: number; floor: number } | null>(null);
+  const lastRoutedFriendRef = useRef<{ x: number; y: number; floor: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (isEmergencyActive) {
@@ -169,7 +211,7 @@ export function NavigationScreen() {
             duration: 600,
             useNativeDriver: true,
           }),
-        ])
+        ]),
       ).start();
     } else {
       scaleAnim.setValue(1);
@@ -195,10 +237,81 @@ export function NavigationScreen() {
   const [search, setSearch] = useState("");
   const [destPoi, setDestPoi] = useState<Poi | null>(null);
   const [selectedPreviewPoi, setSelectedPreviewPoi] = useState<Poi | null>(null);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [reviews, setReviews] = useState<PoiReview[]>([]);
+  const [loadingReviews, setLoadingReviews] = useState(false);
+  const [showReviewsList, setShowReviewsList] = useState(false);
+  const [activeSheetTab, setActiveSheetTab] = useState<
+    "details" | "reviews" | "write_review"
+  >("details");
+
+  const [rating, setRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
+  const handleBackendSubmitReview = async () => {
+    if (!selectedPreviewPoi) return;
+    setReviewError(null);
+    setIsSubmittingReview(true);
+    try {
+      await apiClient.post(`/client/recommendations/${selectedPreviewPoi.id}/reviews`, {
+        rating,
+        comment: reviewComment.trim() || null,
+      });
+      // Refetch reviews
+      const { data } = await apiClient.get(
+        `/client/recommendations/${selectedPreviewPoi.id}/reviews`,
+      );
+      setReviews(data || []);
+      setIsSubmittingReview(false);
+      setReviewComment("");
+      setRating(5);
+      setActiveSheetTab("reviews");
+    } catch (err: any) {
+      console.error("[SubmitReview] Failed submitting review:", err);
+      setReviewError(
+        err?.response?.data?.error ?? "Failed to submit review. Please try again.",
+      );
+      setIsSubmittingReview(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedPreviewPoi) {
+      setReviews([]);
+      setShowReviewsList(false);
+      setActiveSheetTab("details");
+      setRating(5);
+      setReviewComment("");
+      setReviewError(null);
+      setIsSubmittingReview(false);
+      return;
+    }
+    setLoadingReviews(true);
+    apiClient
+      .get(`/client/recommendations/${selectedPreviewPoi.id}/reviews`)
+      .then(({ data }) => {
+        setReviews(data || []);
+      })
+      .catch((err) => {
+        console.error("Failed fetching reviews:", err);
+      })
+      .finally(() => {
+        setLoadingReviews(false);
+      });
+  }, [selectedPreviewPoi, reviewModalOpen]);
   const [route, setRoute] = useState<PathPoint[] | null>(null);
   const [navSteps, setNavSteps] = useState<NavStep[]>([]);
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [showAllSteps, setShowAllSteps] = useState(false);
+
+  // Arrival: once we're within threshold of the destination, prompt the user
+  // to confirm + optionally rate it. Guarded so it only fires once per
+  // destination (reset whenever a new destination is picked/cleared).
+  const arrivalNotifiedIdRef = useRef<string | null>(null);
+  const [arrivedPoi, setArrivedPoi] = useState<Poi | null>(null);
+  const [arrivalReviewOpen, setArrivalReviewOpen] = useState(false);
 
   const floors = building?.floors ?? [];
   const activeFloor = useMemo(
@@ -225,15 +338,17 @@ export function NavigationScreen() {
     // A POI destination replaces any follow-a-friend routing.
     setFriendFollowing(false);
     lastRoutedFriendRef.current = null;
+    arrivalNotifiedIdRef.current = null;
+    setArrivedPoi(null);
     setDestPoi(poi);
     setSelectedPreviewPoi(null);
     setSearch("");
     if (floors.some((f) => f.level === poi.floorLevel)) setFloorLevel(poi.floorLevel);
     const startFloor = bypassEnabled
-      ? BYPASS_FLOOR
+      ? bypassFloor
       : (positioning.floor ?? activeFloor?.level ?? poi.floorLevel);
-    const startX = bypassEnabled ? BYPASS_X : (positioning.y ?? 0);
-    const startY = bypassEnabled ? BYPASS_Y : corridorCrossM(startFloor);
+    const startX = bypassEnabled ? bypassX : (positioning.y ?? 0);
+    const startY = bypassEnabled ? bypassY : corridorCrossM(startFloor);
     const res = findRoute({
       startFloor,
       startXm: startX,
@@ -242,6 +357,10 @@ export function NavigationScreen() {
       endXm: poi.x,
       endYm: poi.y,
       stepFree: !!user?.needsStepFree,
+      transitionPois,
+      // Route around blocked stairs/elevators + areas even for a manual destination.
+      blockedPoiIds: isEmergencyActive ? emergencyData?.blockedPoiIds : undefined,
+      blockedZones: isEmergencyActive ? emergencyData?.blockedZones : undefined,
     });
     setRoute(res?.waypoints ?? null);
     setNavSteps(res?.steps ?? []);
@@ -265,6 +384,7 @@ export function NavigationScreen() {
   const handleSelectPoi = (poi: Poi) => {
     const isPreviewType = ["ROOM", "LAB", "OTHER", "STORE"].includes(poi.type);
     if (isPreviewType) {
+      setArrivedPoi(null);
       setSelectedPreviewPoi(poi);
       setSearch("");
       if (floors.some((f) => f.level === poi.floorLevel)) {
@@ -300,6 +420,8 @@ export function NavigationScreen() {
     setSelectedPreviewPoi(null);
     setFriendFollowing(false);
     lastRoutedFriendRef.current = null;
+    arrivalNotifiedIdRef.current = null;
+    setArrivedPoi(null);
     setRoute(null);
     setNavSteps([]);
     setCurrentStepIdx(0);
@@ -319,90 +441,137 @@ export function NavigationScreen() {
   // exists. Manual taps still win between transitions (until the model's floor changes again).
   const lastAutoFloorRef = useRef<number | null>(null);
   useEffect(() => {
-    const pf = positioning.floor;
+    const pf = bypassEnabled ? bypassFloor : positioning.floor;
     if (pf == null || pf === lastAutoFloorRef.current) return;
     if (floors.some((f) => f.level === pf)) {
       lastAutoFloorRef.current = pf;
       setFloorLevel(pf);
     }
-  }, [positioning.floor, floors]);
+  }, [bypassEnabled, bypassFloor, positioning.floor, floors]);
 
   // 1-D corridor: the model returns the along-corridor position (x); the cross
   // position is the corridor centerline. Both in METER coords (same as POIs/route).
   const userPosition = useMemo(() => {
     if (bypassEnabled) {
-      return { x: BYPASS_X, y: BYPASS_Y };
+      return { x: bypassX, y: bypassY };
     }
     return positioning.y == null
       ? null
       : { x: positioning.y, y: corridorCrossM(positioning.floor) };
-  }, [positioning.y, positioning.floor, bypassEnabled]);
+  }, [positioning.y, positioning.floor, bypassEnabled, bypassX, bypassY]);
 
   // Automatically manage route calculations and evacuation destination during an emergency
   useEffect(() => {
     if (!isEmergencyActive || !allPois || !floors.length) return;
 
-    let targetPoi: Poi | null = null;
-    if (emergencyData?.gatheringPointId) {
-      targetPoi = allPois.find((p) => p.id === emergencyData.gatheringPointId) ?? null;
-    }
+    // Never evacuate people TO a stairs/elevator the admin marked inaccessible.
+    const blockedSet = new Set(emergencyData?.blockedPoiIds ?? []);
+    const isUsable = (p: Poi) => !blockedSet.has(p.id);
 
-    if (!targetPoi) {
-      const exits = allPois.filter((p) => p.isEmergencyExit);
-      if (exits.length > 0) {
-        const startFloor = bypassEnabled ? BYPASS_FLOOR : (positioning.floor ?? activeFloor?.level ?? 0);
-        const startX = bypassEnabled ? BYPASS_X : (positioning.y ?? 0);
-        const startY = bypassEnabled ? BYPASS_Y : corridorCrossM(startFloor);
+    const startFloor = bypassEnabled
+      ? bypassFloor
+      : (positioning.floor ?? activeFloor?.level ?? 0);
+    const startX = bypassEnabled ? bypassX : (positioning.y ?? 0);
+    const startY = bypassEnabled ? bypassY : corridorCrossM(startFloor);
 
-        let bestExit = exits[0];
-        let minDist = Infinity;
-        for (const exit of exits) {
-          const floorDiffPenalty = exit.floorLevel === startFloor ? 0 : 50;
-          const dist = Math.hypot(exit.x - startX, exit.y - startY) + floorDiffPenalty;
-          if (dist < minDist) {
-            minDist = dist;
-            bestExit = exit;
-          }
-        }
-        targetPoi = bestExit;
-      }
-    }
-
-    if (!targetPoi) {
-      const fallbackExits = allPois.filter((p) => p.type === "STAIRS" || p.type === "ELEVATOR");
-      if (fallbackExits.length > 0) {
-        targetPoi = fallbackExits[0];
-      }
-    }
-
-    if (targetPoi) {
-      setDestPoi(targetPoi);
-      if (floors.some((f) => f.level === targetPoi.floorLevel)) {
-        setFloorLevel(targetPoi.floorLevel);
-      }
-
-      const startFloor = bypassEnabled ? BYPASS_FLOOR : (positioning.floor ?? activeFloor?.level ?? targetPoi.floorLevel);
-      const startX = bypassEnabled ? BYPASS_X : (positioning.y ?? 0);
-      const startY = bypassEnabled ? BYPASS_Y : corridorCrossM(startFloor);
-
-      const res = findRoute({
+    const routeTo = (p: Poi) => {
+      const req = {
         startFloor,
         startXm: startX,
         startYm: startY,
-        endFloor: targetPoi.floorLevel,
-        endXm: targetPoi.x,
-        endYm: targetPoi.y,
-        stepFree: !!user?.needsStepFree,
+        endFloor: p.floorLevel,
+        endXm: p.x,
+        endYm: p.y,
+        transitionPois,
         blockedPoiIds: emergencyData?.blockedPoiIds,
-        allPois,
-      });
+        blockedZones: emergencyData?.blockedZones,
+      };
+      const stepFree = !!user?.needsStepFree;
+      const res = findRoute({ ...req, stepFree });
+      if (res || !stepFree) return res;
+      // Step-free routing only allows elevators, but in an emergency the elevator
+      // may be inside the blocked area (unreachable). A step-free user still has
+      // to get out, so fall back to allowing stairs rather than stranding them.
+      console.log(`[evac] step-free route to "${p.name}" failed — retrying with stairs allowed`);
+      return findRoute({ ...req, stepFree: false });
+    };
 
-      setRoute(res?.waypoints ?? null);
-      setNavSteps(res?.steps ?? []);
+    // Candidate destinations, in priority order. Each group is only consulted if
+    // the higher-priority group produced no REACHABLE candidate — so a blocked or
+    // unreachable exit is skipped instead of leaving the user with no route.
+    const gatheringPoint = emergencyData?.gatheringPointId
+      ? allPois.find((p) => p.id === emergencyData.gatheringPointId)
+      : undefined;
+    const isTransition = (p: Poi) =>
+      (p.type === "STAIRS" || p.type === "ELEVATOR") && isUsable(p);
+    const groups: Poi[][] = [
+      gatheringPoint ? [gatheringPoint] : [],
+      allPois.filter((p) => p.isEmergencyExit && isUsable(p)),
+      // Evacuation = get DOWN. Target stairs/elevators on a LOWER floor so that
+      // "reachable" means the descent actually works: a staircase whose bottom is
+      // in the blocked area can't be reached, so the A* falls to another one.
+      allPois.filter((p) => isTransition(p) && p.floorLevel < startFloor),
+      // Last resort: a transition on the CURRENT floor (or user already lowest) —
+      // at least gets them to a staircase even if we can't verify the descent.
+      allPois.filter((p) => isTransition(p) && p.floorLevel === startFloor),
+    ];
+
+    // Descending is the goal, so a lower-floor target is preferred, not penalized.
+    const straightCost = (p: Poi) =>
+      Math.hypot(p.x - startX, p.y - startY) + (p.floorLevel <= startFloor ? 0 : 50);
+
+    const groupNames = ["gatheringPoint", "emergencyExits", "descend↓", "same-floor stairs"];
+    console.log("[evac] START", {
+      startFloor,
+      start: `(${startX.toFixed(1)},${startY.toFixed(1)})`,
+      blockedPoiIds: emergencyData?.blockedPoiIds ?? [],
+      blockedZones: (emergencyData?.blockedZones ?? []).length,
+      transitionPois: transitionPois.map((p) => `${p.type[0]}:${p.id.slice(-4)}@f${p.floorLevel}`),
+      groups: groups.map((g, i) => `${groupNames[i]}=${g.map((p) => `${p.name}(${p.id.slice(-4)})@f${p.floorLevel}`).join("|") || "∅"}`),
+    });
+
+    // Pick the NEAREST candidate that actually has a route (checked cheapest-first
+    // by straight-line distance, so we stop at the first reachable one).
+    let best: { poi: Poi; res: NonNullable<ReturnType<typeof findRoute>> } | null = null;
+    for (let gi = 0; gi < groups.length; gi++) {
+      for (const c of groups[gi].slice().sort((a, b) => straightCost(a) - straightCost(b))) {
+        console.log(`[evac] try ${groupNames[gi]} "${c.name}"(${c.id.slice(-4)}) @f${c.floorLevel}`);
+        const res = routeTo(c);
+        if (res) {
+          console.log(`[evac] → REACHABLE via floors ${res.waypoints.map((w) => w.floorLevel).filter((f, i, a) => i === 0 || f !== a[i - 1]).join("→")}`);
+          best = { poi: c, res };
+          break;
+        }
+        console.log(`[evac] → unreachable, skipping`);
+      }
+      if (best) break;
+    }
+
+    if (best) {
+      console.log(`[evac] CHOSE "${best.poi.name}"(${best.poi.id.slice(-4)}) @f${best.poi.floorLevel}, ${best.res.waypoints.length} waypoints`);
+      setDestPoi(best.poi);
+      if (floors.some((f) => f.level === best.poi.floorLevel)) {
+        setFloorLevel(best.poi.floorLevel);
+      }
+      setRoute(best.res.waypoints);
+      setNavSteps(best.res.steps);
       setCurrentStepIdx(0);
       setShowAllSteps(false);
+    } else {
+      console.log("[evac] NO reachable exit — clearing route");
+      // No reachable exit — clear any stale route rather than showing a wrong line.
+      setRoute(null);
+      setNavSteps([]);
     }
-  }, [isEmergencyActive, emergencyData, userPosition?.x, userPosition?.y, allPois, floors]);
+  }, [
+    isEmergencyActive,
+    emergencyData,
+    userPosition?.x,
+    userPosition?.y,
+    allPois,
+    transitionPois,
+    floors,
+  ]);
 
   // Clear emergency destination when alert is cleared
   const prevEmergencyActiveRef = useRef(false);
@@ -417,17 +586,25 @@ export function NavigationScreen() {
   useEffect(() => {
     if (!destPoi || !userPosition) return;
 
-    const currentFloor = bypassEnabled ? BYPASS_FLOOR : positioning.floor;
+    const currentFloor = bypassEnabled ? bypassFloor : positioning.floor;
     if (currentFloor !== destPoi.floorLevel) return;
 
+    // Use the final step's end coordinates (the snapped walkable goal) if available,
+    // otherwise fall back to the raw POI coordinates. This ensures that 1D corridor centerline
+    // tracking can actually reach the destination proximity.
+    const lastStep = navSteps[navSteps.length - 1];
+    const targetX = lastStep ? lastStep.endXm : destPoi.x;
+    const targetY = lastStep ? lastStep.endYm : destPoi.y;
+
     const dist = Math.sqrt(
-      Math.pow(userPosition.x - destPoi.x, 2) + Math.pow(userPosition.y - destPoi.y, 2),
+      Math.pow(userPosition.x - targetX, 2) + Math.pow(userPosition.y - targetY, 2),
     );
 
     // Read arrival threshold from configuration environment (defaults to 2.0 meters)
     const threshold = Number(process.env.EXPO_PUBLIC_POI_ARRIVE_THRESHOLD_METERS ?? 2.0);
 
-    if (dist <= threshold) {
+    if (dist <= threshold && arrivalNotifiedIdRef.current !== destPoi.id) {
+      arrivalNotifiedIdRef.current = destPoi.id;
       apiClient
         .post(`/client/recommendations/${destPoi.id}/arrive`)
         .then(() => {
@@ -436,10 +613,18 @@ export function NavigationScreen() {
         .catch((err) => {
           console.warn("Failed to record navigation arrival:", err);
         });
-    }
-  }, [userPosition, destPoi, positioning.floor, bypassEnabled]);
 
-  const userFloor = bypassEnabled ? BYPASS_FLOOR : positioning.floor;
+      // Stop turn-by-turn navigation and swap the nav card for the arrival card.
+      setRoute(null);
+      setNavSteps([]);
+      setCurrentStepIdx(0);
+      setShowAllSteps(false);
+      setDestPoi(null);
+      setArrivedPoi(destPoi);
+    }
+  }, [userPosition, destPoi, positioning.floor, bypassEnabled, navSteps]);
+
+  const userFloor = bypassEnabled ? bypassFloor : positioning.floor;
   const showUserDot = userFloor === (activeFloor?.level ?? 0);
 
   // Stream my live position to the backend relay: while I have an active
@@ -452,6 +637,17 @@ export function NavigationScreen() {
     y: userPosition?.y ?? null,
     floorLevel: userFloor ?? null,
     refreshKey: locationShare.refreshKey,
+  });
+
+  // Anonymized MQTT telemetry for the admin heatmap — separate from the
+  // identified /location share above: random per-session device id, no user
+  // identity, fail-safe if the broker is unreachable.
+  useMqttTelemetry({
+    enabled: !!effectiveId && userPosition != null && userFloor != null,
+    buildingId: effectiveId,
+    x: userPosition?.x ?? null,
+    y: userPosition?.y ?? null,
+    floorLevel: userFloor ?? null,
   });
 
   // Follow-a-friend live re-route: recompute when the friend moves more than
@@ -471,10 +667,10 @@ export function NavigationScreen() {
       floor: friendPos.floorLevel,
     };
     const startFloor = bypassEnabled
-      ? BYPASS_FLOOR
+      ? bypassFloor
       : (positioning.floor ?? activeFloor?.level ?? friendPos.floorLevel);
-    const startX = bypassEnabled ? BYPASS_X : (positioning.y ?? 0);
-    const startY = bypassEnabled ? BYPASS_Y : corridorCrossM(startFloor);
+    const startX = bypassEnabled ? bypassX : (positioning.y ?? 0);
+    const startY = bypassEnabled ? bypassY : corridorCrossM(startFloor);
     const res = findRoute({
       startFloor,
       startXm: startX,
@@ -483,11 +679,14 @@ export function NavigationScreen() {
       endXm: friendPos.x,
       endYm: friendPos.y,
       stepFree: !!user?.needsStepFree,
+      transitionPois,
+      blockedPoiIds: isEmergencyActive ? emergencyData?.blockedPoiIds : undefined,
+      blockedZones: isEmergencyActive ? emergencyData?.blockedZones : undefined,
     });
     setRoute(res?.waypoints ?? null);
     setNavSteps(res?.steps ?? []);
     setCurrentStepIdx(0);
-  }, [friendFollowing, friendPos, isEmergencyActive]);
+  }, [friendFollowing, friendPos, isEmergencyActive, transitionPois, emergencyData]);
 
   // The sharer stopped (or the link expired) while we were watching.
   useEffect(() => {
@@ -503,7 +702,7 @@ export function NavigationScreen() {
   }, [friendWatch.ended]);
 
   // ── User facing direction (compass + IMU), Google-Maps-style cone ──
-  const heading = useHeading({ enabled: showUserDot && !bypassEnabled });
+  const heading = useHeading({ enabled: showUserDot });
 
   // Movement bearing in the MAP frame from recent along-corridor deltas: +x
   // (increasing metres) → 90°, −x → 270°. Used as a gentle nudge so the cone
@@ -522,9 +721,7 @@ export function NavigationScreen() {
 
   const northOffset = building?.northOffsetDeg ?? 0;
   let headingMapDeg: number | null =
-    heading.headingDeg == null
-      ? null
-      : normalize360(heading.headingDeg - northOffset);
+    heading.headingDeg == null ? null : normalize360(heading.headingDeg - northOffset);
   // Display-only movement nudge; skip when far off to avoid 180° flips.
   if (headingMapDeg != null && movementBearingRef.current != null) {
     const diff = shortestArc(headingMapDeg, movementBearingRef.current);
@@ -536,7 +733,31 @@ export function NavigationScreen() {
   // floor. Manual Previous/Next still work between updates.
   useEffect(() => {
     const step = navSteps[currentStepIdx];
-    if (!step || step.direction === "arrive") return;
+    if (!step) return;
+
+    if (step.direction === "arrive") {
+      // The user has arrived at the final step! Trigger the arrival flow.
+      if (destPoi && arrivalNotifiedIdRef.current !== destPoi.id) {
+        arrivalNotifiedIdRef.current = destPoi.id;
+        apiClient
+          .post(`/client/recommendations/${destPoi.id}/arrive`)
+          .then(() => {
+            console.log("Successfully recorded arrival at POI (via step advance):", destPoi.name);
+          })
+          .catch((err) => {
+            console.warn("Failed to record navigation arrival (via step advance):", err);
+          });
+
+        setRoute(null);
+        setNavSteps([]);
+        setCurrentStepIdx(0);
+        setShowAllSteps(false);
+        setDestPoi(null);
+        setArrivedPoi(destPoi);
+      }
+      return;
+    }
+
     if (step.direction === "stairs") {
       if (userFloor === step.floorLevel) {
         setCurrentStepIdx((i) => Math.min(navSteps.length - 1, i + 1));
@@ -548,7 +769,7 @@ export function NavigationScreen() {
     if (dist <= STEP_ADVANCE_M) {
       setCurrentStepIdx((i) => Math.min(navSteps.length - 1, i + 1));
     }
-  }, [navSteps, currentStepIdx, userPosition, userFloor]);
+  }, [navSteps, currentStepIdx, userPosition, userFloor, destPoi]);
 
   // Header bar height (safe-area top + padding + content + padding)
   const HEADER_HEIGHT = insets.top + 30;
@@ -593,7 +814,10 @@ export function NavigationScreen() {
                 <Text className="text-white font-black text-xs uppercase tracking-wide">
                   Emergency Alert
                 </Text>
-                <Text className="text-red-100 text-[13px] font-bold leading-tight" numberOfLines={1}>
+                <Text
+                  className="text-red-100 text-[13px] font-bold leading-tight"
+                  numberOfLines={1}
+                >
                   {emergencyData?.message || "Evacuate Immediately!"}
                 </Text>
               </View>
@@ -605,24 +829,34 @@ export function NavigationScreen() {
                 className="w-8 h-8"
                 resizeMode="contain"
               />
-              <Text className="text-xl font-bold text-white tracking-tight">Navimind</Text>
+              <Text className="text-xl font-bold text-white tracking-tight">
+                Navimind
+              </Text>
             </View>
           )}
 
           <View className="flex-row items-center">
             {!isEmergencyActive ? (
-              <TouchableOpacity
-                onPress={() => {
-                  if (!user) {
-                    Alert.alert("Sign in required", "Sign in to share your live location.");
-                    return;
-                  }
-                  setShareSheetOpen(true);
-                }}
-                className="ml-2"
-              >
-                <Ionicons name="share-social-outline" size={22} color="#d4e4fa" />
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity onPress={() => setJoinShareOpen(true)} className="ml-2">
+                  <Ionicons name="enter-outline" size={22} color="#d4e4fa" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (!user) {
+                      Alert.alert(
+                        "Sign in required",
+                        "Sign in to share your live location.",
+                      );
+                      return;
+                    }
+                    setShareSheetOpen(true);
+                  }}
+                  className="ml-4"
+                >
+                  <Ionicons name="share-social-outline" size={22} color="#d4e4fa" />
+                </TouchableOpacity>
+              </>
             ) : null}
             <TouchableOpacity onPress={() => router.back()} className="ml-4">
               <Ionicons
@@ -661,7 +895,9 @@ export function NavigationScreen() {
           headingAccuracyDeg={heading.accuracyDeg}
           path={route ?? undefined}
           pois={allPois ?? []}
-          destinationPoiId={destPoi?.id ?? selectedPreviewPoi?.id ?? null}
+          destinationPoiId={destPoi?.id ?? selectedPreviewPoi?.id ?? arrivedPoi?.id ?? null}
+          blockedZones={isEmergencyActive ? emergencyData?.blockedZones : undefined}
+          blockedPoiIds={isEmergencyActive ? emergencyData?.blockedPoiIds : undefined}
           onSelectPoi={handleSelectPoi}
           currentFloorLevel={activeFloor?.level ?? 0}
           displayWidth={displayWidth}
@@ -670,32 +906,31 @@ export function NavigationScreen() {
         />
       </View>
 
-      {/* Debug-only north rose — shows where real-world north sits on the map.
+      {/* North rose — shows where real-world north sits on the map.
           Screen angle = floor rotationDeg − building northOffsetDeg. */}
-      {debugMode && (
+      <View
+        pointerEvents="none"
+        className="absolute items-center justify-center rounded-full bg-black/50 border border-white/15"
+        style={{
+          top: HEADER_HEIGHT + (((destPoi || friendFollowing) && currentStep) || (isEmergencyActive && (!destPoi || !currentStep)) ? 116 : 84),
+          right: 24,
+          width: 44,
+          height: 44,
+          zIndex: 10,
+        }}
+      >
         <View
-          pointerEvents="none"
-          className="absolute items-center justify-center rounded-full bg-black/50 border border-white/15"
           style={{
-            top: HEADER_HEIGHT + 16,
-            right: 16,
-            width: 44,
-            height: 44,
+            transform: [
+              { rotate: `${(activeFloor?.rotationDeg ?? 0) - northOffset}deg` },
+            ],
           }}
+          className="items-center"
         >
-          <View
-            style={{
-              transform: [
-                { rotate: `${(activeFloor?.rotationDeg ?? 0) - northOffset}deg` },
-              ],
-            }}
-            className="items-center"
-          >
-            <Ionicons name="arrow-up" size={20} color="#f87171" />
-          </View>
-          <Text className="text-[8px] font-bold text-white absolute bottom-1">N</Text>
+          <Ionicons name="arrow-up" size={20} color="#f87171" />
         </View>
-      )}
+        <Text className="text-[8px] font-bold text-white absolute bottom-1">N</Text>
+      </View>
 
       {/* Overlay controls (search, destination, floor selector, details card) */}
       <View
@@ -708,9 +943,7 @@ export function NavigationScreen() {
           <View className="gap-4" pointerEvents="box-none">
             {/* Header row / Search bar OR Turn Instructions Card */}
             {isEmergencyActive && (!destPoi || !currentStep) ? (
-              <View
-                className="w-full flex-row items-center border border-red-600 rounded-2xl px-4 py-3.5 bg-red-950/95"
-              >
+              <View className="w-full flex-row items-center border border-red-600 rounded-2xl px-4 py-3.5 bg-red-950/95">
                 <View className="w-10 h-10 rounded-xl bg-red-900 border border-red-600 items-center justify-center mr-3">
                   <Ionicons name="warning" size={22} color="white" />
                 </View>
@@ -737,7 +970,9 @@ export function NavigationScreen() {
                 {/* Direction icon — rotated to match the drawn route */}
                 <View
                   className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${
-                    isEmergencyActive ? "bg-red-950/20 border border-red-500/30" : "bg-brand/20 border border-brand/40"
+                    isEmergencyActive
+                      ? "bg-red-950/20 border border-red-500/30"
+                      : "bg-brand/20 border border-brand/40"
                   }`}
                 >
                   <StepArrow
@@ -753,7 +988,9 @@ export function NavigationScreen() {
                   <Text className="text-white font-semibold text-base leading-snug">
                     {currentStep.text}
                   </Text>
-                  <Text className={`text-xs mt-0.5 ${isEmergencyActive ? "text-red-300" : "text-neutral-400"}`}>
+                  <Text
+                    className={`text-xs mt-0.5 ${isEmergencyActive ? "text-red-300" : "text-neutral-400"}`}
+                  >
                     Step {currentStepIdx + 1} of {navSteps.length}
                     {currentStep.distanceM > 0 &&
                       ` • In ${currentStep.distanceM.toFixed(0)}m`}
@@ -761,9 +998,9 @@ export function NavigationScreen() {
                 </View>
               </View>
             ) : (
-              <View className="flex-row items-center">
+              <View className="flex-row items-center py-0">
                 <View
-                  className="flex-1 flex-row items-center border border-white/10 rounded-full px-4 py-2.5 shadow-lg"
+                  className="flex-1 flex-row items-center border border-white/10 rounded-full px-4 py-[10px] shadow-lg"
                   style={{ backgroundColor: "rgba(17, 32, 51, 0.85)" }}
                 >
                   <Ionicons name="search" size={20} color="#94a3b8" />
@@ -807,9 +1044,13 @@ export function NavigationScreen() {
               </View>
             ) : null}
 
-            {/* Active live-location share pill */}
+            {/* Active live-location share pill — tap to reopen the link/QR/code panel */}
             {locationShare.activeShare ? (
-              <View className="self-start flex-row items-center gap-2 bg-emerald-950/90 border border-emerald-500/40 rounded-full pl-3 pr-1.5 py-1.5">
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setShareResultOpen(true)}
+                className="self-start flex-row items-center gap-2  border border-emerald-500/40 rounded-full pl-3 pr-1.5 py-1.5"
+              >
                 <View className="w-2 h-2 rounded-full bg-emerald-400" />
                 <Text className="text-emerald-200 text-xs font-semibold">
                   Sharing live location
@@ -820,7 +1061,19 @@ export function NavigationScreen() {
                 >
                   <Text className="text-emerald-100 text-[11px] font-bold">Stop</Text>
                 </TouchableOpacity>
-              </View>
+              </TouchableOpacity>
+            ) : null}
+
+            {/* Manual position control while bypass is on — move the fake dot
+                to test live-location sharing without beacons. */}
+            {bypassEnabled && bypassMode === "manual" && showBypassGui ? (
+              <BypassPositionPad
+                x={bypassX}
+                y={bypassY}
+                floor={bypassFloor}
+                step={BYPASS_STEP_M}
+                onChange={setBypassPosition}
+              />
             ) : null}
 
             {/* Status badge - Only visible when debug mode is enabled */}
@@ -829,7 +1082,7 @@ export function NavigationScreen() {
                 <Text className="text-xs font-bold tracking-widest text-brand uppercase">
                   {activeFloor?.name ?? "Floor"} •{" "}
                   {bypassEnabled
-                    ? `BYPASS • FLOOR ${BYPASS_FLOOR} • ${BYPASS_X.toFixed(1)}M, ${BYPASS_Y.toFixed(1)}M`
+                    ? `BYPASS • FLOOR ${bypassFloor} • ${bypassX.toFixed(1)}M, ${bypassY.toFixed(1)}M`
                     : positioning.active
                       ? `${positioning.ready ? "TRACKING" : "WARMING UP"}${
                           positioning.floor != null ? ` • FLOOR ${positioning.floor}` : ""
@@ -843,55 +1096,73 @@ export function NavigationScreen() {
           {/* Middle/Bottom area layout */}
           <View className="gap-4 items-stretch" pointerEvents="box-none">
             {/* Floor selector & floating controls (recenter, chatbot) */}
-            <View className="self-end gap-3 items-center mb-2" pointerEvents="box-none">
-              {/* Floor selector (vertical pill float) */}
-              {floors.length > 1 ? (
-                <View className="bg-neutral-900/85 border border-white/10 rounded-3xl p-1 shadow-2xl gap-2 items-center">
-                  {floors.map((f) => (
-                    <TouchableOpacity
-                      key={f.id}
-                      className={`w-10 h-10 items-center justify-center rounded-full ${
-                        f.level === floorLevel ? "bg-brand/80" : "bg-transparent"
-                      }`}
-                      onPress={() => setFloorLevel(f.level)}
-                    >
-                      <Text
-                        className={`font-semibold text-xs ${
-                          f.level === floorLevel ? "text-white" : "text-neutral-400"
+            {!selectedPreviewPoi && (
+              <View className="self-end gap-3 items-center mb-2" pointerEvents="box-none">
+                {/* Hidden pause button directly above the floor selectors */}
+                {bypassEnabled && bypassMode === "video" && (
+                  <TouchableOpacity
+                    activeOpacity={1}
+                    onPress={toggleSimulation}
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 24,
+                      backgroundColor: "rgba(255, 255, 255, 0.001)", // completely invisible
+                      alignItems: "center",
+                      justifyContent: "center",
+                      zIndex: 9999,
+                    }}
+                  />
+                )}
+                {/* Floor selector (vertical pill float) */}
+                {floors.length > 1 ? (
+                  <View className="bg-neutral-900/85 border border-white/10 rounded-3xl p-1 shadow-2xl gap-2 items-center">
+                    {floors.map((f) => (
+                      <TouchableOpacity
+                        key={f.id}
+                        className={`w-10 h-10 items-center justify-center rounded-full ${
+                          f.level === floorLevel ? "bg-brand/80" : "bg-transparent"
                         }`}
+                        onPress={() => setFloorLevel(f.level)}
                       >
-                        L{f.level}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                  <View className="w-8 h-px bg-white/10 my-1" />
-                  <View className="w-10 h-10 items-center justify-center">
-                    <Ionicons name="layers-outline" size={18} color="#94a3b8" />
+                        <Text
+                          className={`font-semibold text-xs ${
+                            f.level === floorLevel ? "text-white" : "text-neutral-400"
+                          }`}
+                        >
+                          L{f.level}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                    <View className="w-8 h-px bg-white/10 my-1" />
+                    <View className="w-10 h-10 items-center justify-center">
+                      <Ionicons name="layers-outline" size={18} color="#94a3b8" />
+                    </View>
                   </View>
-                </View>
-              ) : null}
+                ) : null}
 
-              {/* Recenter Button */}
-              <TouchableOpacity
-                className="w-12 h-12 rounded-2xl bg-neutral-900/85 border border-white/10 items-center justify-center shadow-lg active:bg-neutral-800"
-                onPress={() => {
-                  if (userFloor != null && floors.some((f) => f.level === userFloor)) {
-                    setFloorLevel(userFloor);
-                  }
-                  setRecenterTrigger((prev) => prev + 1);
-                }}
-              >
-                <Ionicons name="locate" size={22} color="#00e5ff" />
-              </TouchableOpacity>
+                {/* Recenter Button */}
+                <TouchableOpacity
+                  className="w-12 h-12 rounded-2xl bg-neutral-900/85 border border-white/10 items-center justify-center shadow-lg active:bg-neutral-800"
+                  onPress={() => {
+                    if (userFloor != null && floors.some((f) => f.level === userFloor)) {
+                      setFloorLevel(userFloor);
+                    }
+                    setRecenterTrigger((prev) => prev + 1);
+                  }}
+                >
+                  <Ionicons name="locate" size={22} color="#00e5ff" />
+                </TouchableOpacity>
 
-              {/* Chatbot Button */}
-              <TouchableOpacity
-                className="w-12 h-12 rounded-full bg-neutral-950 border border-white/10 items-center justify-center shadow-lg active:bg-neutral-900"
-                onPress={() => router.push("/chatbot" as any)}
-              >
-                <Ionicons name="chatbubbles" size={22} color="#ffffff" />
-              </TouchableOpacity>
-            </View>
+                {/* Chatbot Button */}
+                <TouchableOpacity
+                  className="w-12 h-12 rounded-full bg-neutral-950 border border-white/10 items-center justify-center shadow-lg active:bg-neutral-900"
+                  onPress={() => router.push("/chatbot" as any)}
+                >
+                  <Ionicons name="chatbubbles" size={22} color="#ffffff" />
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Bottom Panel Conditional: Show Navigation Info Card if navigating, else if selectedPreviewPoi show Place Preview Card, else Building Info Bar */}
             {(destPoi || friendFollowing) && currentStep ? (
@@ -899,15 +1170,21 @@ export function NavigationScreen() {
                 {/* Navigation Status Card */}
                 <View
                   className={`border border-white/10 rounded-2xl px-5 py-4 ${
-                    isEmergencyActive ? "bg-red-950/95 border-red-500/50" : "bg-[#112033]/95"
+                    isEmergencyActive
+                      ? "bg-red-950/95 border-red-500/50"
+                      : "bg-[#112033]/95"
                   }`}
                 >
                   <View className="flex-row items-center justify-between">
                     <View className="flex-1 mr-3">
-                      <Text className={`text-[10px] font-bold tracking-wider uppercase ${
-                        isEmergencyActive ? "text-red-400" : "text-cyan"
-                      }`}>
-                        {isEmergencyActive ? "🚨 EMERGENCY EVACUATION ROUTE" : "Navigate to"}
+                      <Text
+                        className={`text-[10px] font-bold tracking-wider uppercase ${
+                          isEmergencyActive ? "text-red-400" : "text-cyan"
+                        }`}
+                      >
+                        {isEmergencyActive
+                          ? "🚨 EMERGENCY EVACUATION ROUTE"
+                          : "Navigate to"}
                       </Text>
                       <Text
                         className="text-white font-bold text-lg mt-0.5"
@@ -915,12 +1192,14 @@ export function NavigationScreen() {
                       >
                         {destPoi?.name ?? friendName}
                       </Text>
-                      <Text className={`text-xs font-semibold mt-1 ${
-                        isEmergencyActive ? "text-red-300" : "text-brand"
-                      }`}>
+                      <Text
+                        className={`text-xs font-semibold mt-1 ${
+                          isEmergencyActive ? "text-red-300" : "text-brand"
+                        }`}
+                      >
                         {etaSeconds < 60
-                           ? `${etaSeconds}s`
-                           : `${Math.ceil(etaSeconds / 60)} min`}{" "}
+                          ? `${etaSeconds}s`
+                          : `${Math.ceil(etaSeconds / 60)} min`}{" "}
                         • {remainingDistanceM.toFixed(0)}m left
                       </Text>
                       <Text className="text-[11px] text-neutral-400 mt-0.5">
@@ -941,7 +1220,7 @@ export function NavigationScreen() {
                         onPress={() => setShowAllSteps((v) => !v)}
                       >
                         <Ionicons
-                           name={showAllSteps ? "chevron-up" : "list"}
+                          name={showAllSteps ? "chevron-up" : "list"}
                           size={20}
                           color="#94a3b8"
                         />
@@ -1048,92 +1327,561 @@ export function NavigationScreen() {
                   </View>
                 )}
               </View>
-            ) : selectedPreviewPoi ? (
+            ) : arrivedPoi ? (
+              /* Arrival card — replaces the nav card once the user is within the
+                 arrival threshold. Styled like the POI details card. */
               <View
-                className="border border-white/10 rounded-2xl p-5 gap-4 bg-[#112033]/95"
+                className="border border-emerald-500/40 rounded-2xl px-5 py-4 bg-[#112033]/95"
               >
-                {/* Header row: Icon and Name/Category */}
                 <View className="flex-row items-center">
-                  <View className="w-12 h-12 rounded-full overflow-hidden border border-white/15 bg-neutral-900 items-center justify-center mr-3">
-                    {selectedPreviewPoi.iconUrl ? (
+                  <View className="w-14 h-14 rounded-full overflow-hidden border border-emerald-500/30 bg-neutral-900 items-center justify-center mr-3">
+                    {arrivedPoi.iconUrl ? (
                       <Image
-                        source={resolveAssetSource(selectedPreviewPoi.iconUrl) as any}
+                        source={resolveAssetSource(arrivedPoi.iconUrl) as any}
                         style={{ width: "100%", height: "100%" }}
                         resizeMode="cover"
                       />
                     ) : (
-                      <Ionicons name="location" size={24} color="#00e5ff" />
+                      <Ionicons name="checkmark-circle" size={28} color="#34d399" />
                     )}
                   </View>
                   <View className="flex-1 mr-2">
-                    <Text className="text-white font-bold text-lg leading-tight" numberOfLines={1}>
-                      {selectedPreviewPoi.name}
+                    <Text className="text-[10px] font-bold tracking-wider uppercase text-emerald-400">
+                      You've arrived
                     </Text>
-                    <Text className="text-xs text-cyan font-bold uppercase tracking-wider mt-0.5" numberOfLines={1}>
-                      {selectedPreviewPoi.category ?? selectedPreviewPoi.type} • Floor {selectedPreviewPoi.floorLevel}
+                    <Text
+                      className="text-white font-extrabold text-lg mt-0.5"
+                      numberOfLines={1}
+                    >
+                      {arrivedPoi.name}
+                    </Text>
+                    <Text className="text-xs text-neutral-400 mt-0.5" numberOfLines={1}>
+                      {arrivedPoi.category ?? arrivedPoi.type} • Floor{" "}
+                      {arrivedPoi.floorLevel}
                     </Text>
                   </View>
                   <TouchableOpacity
-                    onPress={() => setSelectedPreviewPoi(null)}
+                    onPress={() => setArrivedPoi(null)}
                     activeOpacity={0.8}
-                    className="w-8 h-8 rounded-full bg-white/5 items-center justify-center"
+                    className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
                   >
-                    <Ionicons name="close" size={16} color="#94a3b8" />
+                    <Ionicons name="close" size={18} color="#94a3b8" />
                   </TouchableOpacity>
                 </View>
 
-                {/* Description & Gallery Section */}
-                <View className="gap-3">
-                  {/* Short Description */}
-                  {selectedPreviewPoi.description ? (
-                    <Text className="text-sm text-neutral-300 leading-normal" numberOfLines={3}>
-                      {selectedPreviewPoi.description}
-                    </Text>
-                  ) : null}
-
-                  {/* Image Gallery */}
-                  {selectedPreviewPoi.images && selectedPreviewPoi.images.length > 0 ? (
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      className="flex-row gap-2 mt-1"
-                      nestedScrollEnabled
-                    >
-                      {selectedPreviewPoi.images.map((imgUrl, idx) => (
-                        <View key={idx} className="w-48 h-28 rounded-xl overflow-hidden border border-white/5 bg-neutral-900 mr-2">
-                          <Image
-                            source={resolveAssetSource(imgUrl) as any}
-                            style={{ width: "100%", height: "100%" }}
-                            resizeMode="cover"
-                          />
-                        </View>
-                      ))}
-                    </ScrollView>
-                  ) : null}
-                </View>
-
-                {/* Action Buttons: Navigate or Cancel */}
-                <View className="flex-row gap-3 mt-1">
+                <View className="flex-row gap-3 mt-4">
                   <TouchableOpacity
-                    className="flex-1 h-12 bg-brand rounded-2xl items-center justify-center flex-row gap-2"
+                    className="flex-1 h-12 bg-brand rounded-2xl items-center justify-center flex-row gap-2 shadow-lg shadow-brand/20"
                     activeOpacity={0.8}
-                    onPress={() => {
-                      selectDestination(selectedPreviewPoi);
-                    }}
+                    onPress={() => setArrivalReviewOpen(true)}
                   >
-                    <Ionicons name="navigate" size={18} color="white" />
-                    <Text className="text-white font-bold text-sm">Navigate</Text>
+                    <Ionicons name="star" size={18} color="white" />
+                    <Text className="text-white font-extrabold text-sm">
+                      Rate this place
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     className="h-12 px-6 bg-neutral-800 border border-white/10 rounded-2xl items-center justify-center"
                     activeOpacity={0.8}
-                    onPress={() => setSelectedPreviewPoi(null)}
+                    onPress={() => setArrivedPoi(null)}
                   >
-                    <Text className="text-neutral-300 font-semibold text-sm">Cancel</Text>
+                    <Text className="text-neutral-300 font-semibold text-sm">Done</Text>
                   </TouchableOpacity>
                 </View>
               </View>
-            ) : (shareToken || followFriendUserId) && !friendFollowing && !friendWatch.ended ? (
+            ) : selectedPreviewPoi ? (
+              <Modal
+                visible={!!selectedPreviewPoi}
+                transparent
+                animationType="slide"
+                onRequestClose={() => {
+                  if (activeSheetTab === "reviews") {
+                    setActiveSheetTab("details");
+                  } else {
+                    setSelectedPreviewPoi(null);
+                  }
+                }}
+              >
+                <TouchableOpacity
+                  className="flex-1 justify-end bg-black/10"
+                  activeOpacity={1}
+                  onPress={() => setSelectedPreviewPoi(null)}
+                >
+                  {/* Floating Controls (Floor Selector & Recenter) Pushed Up Inside Modal */}
+                  <View
+                    className="self-end gap-3 items-center mr-6 mb-4"
+                    pointerEvents="box-none"
+                  >
+                    {/* Floor selector (vertical pill float) */}
+                    {floors.length > 1 ? (
+                      <View className="bg-neutral-900/90 border border-white/10 rounded-3xl p-1 shadow-2xl gap-2 items-center">
+                        {floors.map((f) => (
+                          <TouchableOpacity
+                            key={f.id}
+                            className={`w-10 h-10 items-center justify-center rounded-full ${
+                              f.level === floorLevel ? "bg-brand/80" : "bg-transparent"
+                            }`}
+                            onPress={() => setFloorLevel(f.level)}
+                          >
+                            <Text
+                              className={`font-semibold text-xs ${
+                                f.level === floorLevel ? "text-white" : "text-neutral-400"
+                              }`}
+                            >
+                              L{f.level}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                        <View className="w-8 h-px bg-white/10 my-1" />
+                        <View className="w-10 h-10 items-center justify-center">
+                          <Ionicons name="layers-outline" size={18} color="#94a3b8" />
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {/* Recenter Button */}
+                    <TouchableOpacity
+                      className="w-12 h-12 rounded-2xl bg-neutral-900/90 border border-white/10 items-center justify-center shadow-lg active:bg-neutral-800"
+                      onPress={() => {
+                        if (
+                          userFloor != null &&
+                          floors.some((f) => f.level === userFloor)
+                        ) {
+                          setFloorLevel(userFloor);
+                        }
+                        setRecenterTrigger((prev) => prev + 1);
+                      }}
+                    >
+                      <Ionicons name="locate" size={22} color="#00e5ff" />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* POI details card itself with taller dimensions & more space */}
+                  <TouchableOpacity
+                    activeOpacity={1}
+                    className="border-t border-x border-white/10 rounded-t-[32px] pt-5 px-6 pb-6 gap-3.5 bg-[#112033] shadow-2xl"
+                    style={{
+                      paddingBottom: Math.max(insets.bottom + 8, 32),
+                      minHeight: 320,
+                    }}
+                  >
+                    {/* Drag Handle Indicator */}
+                    <View className="w-14 h-1 rounded-full bg-white/20 self-center -mt-1 mb-1" />
+
+                    {activeSheetTab === "details" ? (
+                      <>
+                        {/* Header row: Icon and Name/Category */}
+                        <View className="flex-row items-center">
+                          <View className="w-14 h-14 rounded-full overflow-hidden border border-white/15 bg-neutral-900 items-center justify-center mr-3">
+                            {selectedPreviewPoi.iconUrl ? (
+                              <Image
+                                source={
+                                  resolveAssetSource(selectedPreviewPoi.iconUrl) as any
+                                }
+                                style={{ width: "100%", height: "100%" }}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons name="location" size={26} color="#00e5ff" />
+                            )}
+                          </View>
+                          <View className="flex-1 mr-2">
+                            <Text
+                              className="text-white font-extrabold text-xl leading-tight"
+                              numberOfLines={1}
+                            >
+                              {selectedPreviewPoi.name}
+                            </Text>
+                            <Text
+                              className="text-xs text-cyan font-bold uppercase tracking-wider mt-1"
+                              numberOfLines={1}
+                            >
+                              {selectedPreviewPoi.category ?? selectedPreviewPoi.type} •
+                              Floor {selectedPreviewPoi.floorLevel}
+                            </Text>
+                            <View className="flex-row items-center gap-1.5 mt-1">
+                              <Ionicons name="star" size={14} color="#ffd700" />
+                              <Text className="text-white text-xs font-bold">
+                                {reviews.length > 0
+                                  ? `${(reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)}`
+                                  : "—"}
+                              </Text>
+                              <Text className="text-neutral-400 text-xs font-semibold">
+                                ({reviews.length}{" "}
+                                {reviews.length === 1 ? "review" : "reviews"})
+                              </Text>
+                            </View>
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => setSelectedPreviewPoi(null)}
+                            activeOpacity={0.8}
+                            className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
+                          >
+                            <Ionicons name="close" size={18} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Description & Gallery Section */}
+                        <View className="gap-3.5">
+                          {/* Short Description */}
+                          {selectedPreviewPoi.description ? (
+                            <Text
+                              className="text-sm text-neutral-300 leading-relaxed"
+                              numberOfLines={5}
+                            >
+                              {selectedPreviewPoi.description}
+                            </Text>
+                          ) : null}
+
+                          {/* Image Gallery */}
+                          {selectedPreviewPoi.images &&
+                          selectedPreviewPoi.images.length > 0 ? (
+                            <View className="mt-2">
+                              <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                className="flex-row gap-3"
+                                nestedScrollEnabled
+                              >
+                                {selectedPreviewPoi.images.map((imgUrl, idx) => (
+                                  <View
+                                    key={idx}
+                                    className="w-64 h-36 rounded-2xl overflow-hidden border border-white/5 bg-neutral-900 mr-2 shadow-lg"
+                                  >
+                                    <Image
+                                      source={resolveAssetSource(imgUrl) as any}
+                                      style={{ width: "100%", height: "100%" }}
+                                      resizeMode="cover"
+                                    />
+                                  </View>
+                                ))}
+                              </ScrollView>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        {/* Reviews Navigation Row */}
+                        <View className="border-t border-white/5 pt-3 mt-1">
+                          <TouchableOpacity
+                            activeOpacity={0.7}
+                            onPress={() => setActiveSheetTab("reviews")}
+                            className="flex-row justify-between items-center"
+                          >
+                            <View className="flex-row items-center gap-2">
+                              <Ionicons
+                                name="chatbubbles-outline"
+                                size={16}
+                                color="#94a3b8"
+                              />
+                              <Text className="text-xs font-bold text-neutral-300 uppercase tracking-wider">
+                                Reviews ({reviews.length})
+                              </Text>
+                            </View>
+                            <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Action Buttons: Navigate, Rate, or Cancel */}
+                        <View className="flex-row gap-3 mt-4">
+                          <TouchableOpacity
+                            className="flex-1 h-14 bg-brand rounded-2xl items-center justify-center flex-row gap-2 shadow-lg shadow-brand/20"
+                            activeOpacity={0.8}
+                            onPress={() => {
+                              selectDestination(selectedPreviewPoi);
+                            }}
+                          >
+                            <Ionicons name="navigate" size={20} color="white" />
+                            <Text className="text-white font-extrabold text-sm">
+                              Navigate
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            className="h-14 px-6 bg-neutral-800 border border-white/10 rounded-2xl items-center justify-center"
+                            activeOpacity={0.8}
+                            onPress={() => setSelectedPreviewPoi(null)}
+                          >
+                            <Text className="text-neutral-300 font-semibold text-sm">
+                              Cancel
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    ) : activeSheetTab === "reviews" ? (
+                      <>
+                        {/* Header Row with Back Button, Title, and Close Button */}
+                        <View className="flex-row items-center justify-between">
+                          <View className="flex-row items-center gap-3 flex-1 mr-2">
+                            <TouchableOpacity
+                              onPress={() => setActiveSheetTab("details")}
+                              activeOpacity={0.8}
+                              className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
+                            >
+                              <Ionicons name="arrow-back" size={20} color="#94a3b8" />
+                            </TouchableOpacity>
+                            <View className="flex-1">
+                              <Text
+                                className="text-white font-extrabold text-lg leading-tight"
+                                numberOfLines={1}
+                              >
+                                Reviews
+                              </Text>
+                              <Text
+                                className="text-xs text-neutral-400 mt-0.5"
+                                numberOfLines={1}
+                              >
+                                {selectedPreviewPoi.name}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <TouchableOpacity
+                            onPress={() => setSelectedPreviewPoi(null)}
+                            activeOpacity={0.8}
+                            className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
+                          >
+                            <Ionicons name="close" size={18} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Rating Overview Stats */}
+                        <View className="flex-row items-center gap-4 bg-neutral-900/20 border border-white/5 rounded-2xl p-4 mt-2">
+                          <View className="items-center">
+                            <Text className="text-white text-3xl font-black">
+                              {reviews.length > 0
+                                ? `${(reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)}`
+                                : "—"}
+                            </Text>
+                            <Text className="text-[10px] text-neutral-400 font-bold uppercase mt-1">
+                              out of 5
+                            </Text>
+                          </View>
+                          <View className="flex-1 gap-1">
+                            <View className="flex-row items-center gap-0.5">
+                              {[1, 2, 3, 4, 5].map((s) => {
+                                const avg =
+                                  reviews.length > 0
+                                    ? reviews.reduce((sum, r) => sum + r.rating, 0) /
+                                      reviews.length
+                                    : 0;
+                                return (
+                                  <Ionicons
+                                    key={s}
+                                    name={s <= Math.round(avg) ? "star" : "star-outline"}
+                                    size={14}
+                                    color={s <= Math.round(avg) ? "#ffd700" : "#64748b"}
+                                  />
+                                );
+                              })}
+                            </View>
+                            <Text className="text-xs text-neutral-300 font-medium">
+                              Based on {reviews.length}{" "}
+                              {reviews.length === 1 ? "rating" : "ratings"}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Y-Scrollable Review List */}
+                        <ScrollView
+                          style={{ maxHeight: 220 }}
+                          showsVerticalScrollIndicator={true}
+                          nestedScrollEnabled
+                          className="bg-neutral-900/30 border border-white/5 rounded-2xl p-4 mt-1"
+                        >
+                          {reviews.length > 0 ? (
+                            reviews.map((r) => (
+                              <View
+                                key={r.id}
+                                className="border-b border-white/5 pb-5 mb-5 gap-1.5 last:border-b-0 last:pb-0 last:mb-0"
+                              >
+                                <View className="flex-row justify-between items-center">
+                                  <Text className="text-white text-sm font-bold">
+                                    {r.user?.name || "Anonymous"}
+                                  </Text>
+                                  <View className="flex-row items-center gap-0.5">
+                                    {[1, 2, 3, 4, 5].map((s) => (
+                                      <Ionicons
+                                        key={s}
+                                        name={s <= r.rating ? "star" : "star-outline"}
+                                        size={11}
+                                        color={s <= r.rating ? "#ffd700" : "#64748b"}
+                                      />
+                                    ))}
+                                  </View>
+                                </View>
+                                {r.comment ? (
+                                  <Text className="text-neutral-400 text-xs leading-normal">
+                                    {r.comment}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ))
+                          ) : (
+                            <View className="py-8 items-center justify-center">
+                              <Ionicons
+                                name="chatbubble-outline"
+                                size={24}
+                                color="#64748b"
+                                style={{ marginBottom: 8 }}
+                              />
+                              <Text className="text-neutral-400 text-xs font-semibold">
+                                No reviews yet
+                              </Text>
+                              <Text className="text-neutral-500 text-[10px] mt-0.5">
+                                Be the first to leave a review!
+                              </Text>
+                            </View>
+                          )}
+                        </ScrollView>
+
+                        {/* Action Buttons for Reviews Sub-view */}
+                        <View className="flex-row gap-3 mt-4">
+                          <TouchableOpacity
+                            className="flex-1 h-14 bg-brand rounded-2xl items-center justify-center flex-row gap-2 shadow-lg shadow-brand/20"
+                            activeOpacity={0.8}
+                            onPress={() => setActiveSheetTab("write_review")}
+                          >
+                            <Ionicons name="create-outline" size={20} color="white" />
+                            <Text className="text-white font-extrabold text-sm">
+                              Write Review
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            className="h-14 px-7 bg-neutral-800 border border-white/10 rounded-2xl items-center justify-center"
+                            activeOpacity={0.8}
+                            onPress={() => setActiveSheetTab("details")}
+                          >
+                            <Text className="text-neutral-300 font-semibold text-sm">
+                              Back
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    ) : (
+                      <>
+                        {/* Header Row with Back Button, Title, and Close Button */}
+                        <View className="flex-row items-center justify-between">
+                          <View className="flex-row items-center gap-3 flex-1 mr-2">
+                            <TouchableOpacity
+                              onPress={() => setActiveSheetTab("reviews")}
+                              activeOpacity={0.8}
+                              className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
+                            >
+                              <Ionicons name="arrow-back" size={20} color="#94a3b8" />
+                            </TouchableOpacity>
+                            <View className="flex-1">
+                              <Text
+                                className="text-white font-extrabold text-lg leading-tight"
+                                numberOfLines={1}
+                              >
+                                Rate Place
+                              </Text>
+                              <Text
+                                className="text-xs text-neutral-400 mt-0.5"
+                                numberOfLines={1}
+                              >
+                                {selectedPreviewPoi.name}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <TouchableOpacity
+                            onPress={() => setSelectedPreviewPoi(null)}
+                            activeOpacity={0.8}
+                            className="w-9 h-9 rounded-full bg-white/5 items-center justify-center"
+                          >
+                            <Ionicons name="close" size={18} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        {reviewError && (
+                          <View className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl mt-2 flex-row items-center gap-2">
+                            <Ionicons
+                              name="alert-circle-outline"
+                              size={16}
+                              color="#ef4444"
+                            />
+                            <Text className="text-red-400 text-xs font-semibold flex-1">
+                              {reviewError}
+                            </Text>
+                          </View>
+                        )}
+
+                        {/* Star Rating Selector Row */}
+                        <View className="flex-row justify-center gap-4 py-2 mt-2">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <TouchableOpacity
+                              key={star}
+                              onPress={() => setRating(star)}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons
+                                name={star <= rating ? "star" : "star-outline"}
+                                size={36}
+                                color={star <= rating ? "#ffd700" : "#64748b"}
+                              />
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+
+                        {/* Optional Comment Input */}
+                        <View className="gap-2 mt-1">
+                          <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                            Review Comment (Optional)
+                          </Text>
+                          <TextInput
+                            value={reviewComment}
+                            onChangeText={setReviewComment}
+                            placeholder="Share your experience at this store..."
+                            placeholderTextColor="#64748b"
+                            multiline
+                            numberOfLines={3}
+                            className="w-full bg-neutral-900/40 border border-white/5 rounded-2xl p-4 text-white text-sm"
+                            style={{ height: 80, textAlignVertical: "top" }}
+                          />
+                        </View>
+
+                        {/* Submit Actions */}
+                        <View className="flex-row gap-3 mt-4">
+                          <TouchableOpacity
+                            onPress={handleBackendSubmitReview}
+                            disabled={isSubmittingReview}
+                            className="flex-1 h-14 bg-brand rounded-2xl items-center justify-center flex-row gap-2 shadow-lg shadow-brand/20"
+                            activeOpacity={0.8}
+                          >
+                            {isSubmittingReview ? (
+                              <ActivityIndicator size="small" color="white" />
+                            ) : (
+                              <>
+                                <Ionicons
+                                  name="checkmark-circle-outline"
+                                  size={20}
+                                  color="white"
+                                />
+                                <Text className="text-white font-extrabold text-sm">
+                                  Submit Review
+                                </Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            className="h-14 px-6 bg-neutral-800 border border-white/10 rounded-2xl items-center justify-center"
+                            activeOpacity={0.8}
+                            onPress={() => setActiveSheetTab("reviews")}
+                          >
+                            <Text className="text-neutral-300 font-semibold text-sm">
+                              Cancel
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              </Modal>
+            ) : (shareToken || followFriendUserId) &&
+              !friendFollowing &&
+              !friendWatch.ended ? (
               /* Watching a shared location, not routing yet */
               friendPos ? (
                 <View className="border border-emerald-500/30 rounded-2xl p-5 gap-4 bg-[#112033]/95">
@@ -1235,169 +1983,182 @@ export function NavigationScreen() {
 
                 {/* Expanded section */}
                 {infoExpanded && (
-                  <View className="px-4 pb-3 gap-3 border-t border-white/5 pt-3">
-                    {/* Floor & beacons row */}
-                    <View className="flex-row gap-3">
-                      <View className="flex-1 flex-row items-center gap-2 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
-                        <Ionicons name="layers" size={12} color="#94a3b8" />
-                        <Text className="text-neutral-300 text-xs">
-                          {activeFloor?.name ?? `Level ${floorLevel}`}
-                        </Text>
+                  <ScrollView
+                    style={{ maxHeight: 320 }}
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={true}
+                  >
+                    <View className="px-4 pb-3 gap-3 border-t border-white/5 pt-3">
+                      {/* Floor & beacons row */}
+                      <View className="flex-row gap-3">
+                        <View className="flex-1 flex-row items-center gap-2 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
+                          <Ionicons name="layers" size={12} color="#94a3b8" />
+                          <Text className="text-neutral-300 text-xs">
+                            {activeFloor?.name ?? `Level ${floorLevel}`}
+                          </Text>
+                        </View>
+                        <View className="flex-1 flex-row items-center gap-2 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
+                          <Ionicons name="radio-outline" size={12} color="#94a3b8" />
+                          <Text className="text-neutral-300 text-xs">
+                            Beacons {positioning.uniqueBeacons}/{beaconTotal}
+                          </Text>
+                        </View>
                       </View>
-                      <View className="flex-1 flex-row items-center gap-2 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
-                        <Ionicons name="radio-outline" size={12} color="#94a3b8" />
-                        <Text className="text-neutral-300 text-xs">
-                          Beacons {positioning.uniqueBeacons}/{beaconTotal}
-                        </Text>
-                      </View>
-                    </View>
 
-                    {/* Retry button — only when no beacons detected */}
-                    {positioning.uniqueBeacons === 0 && positioning.active && (
-                      <TouchableOpacity
-                        className="flex-row items-center justify-center gap-2 bg-amber-500/15 border border-amber-500/30 rounded-xl py-2.5"
-                        onPress={() => {
-                          positioning.stop();
-                          positioning.start();
-                        }}
-                      >
-                        <Ionicons name="refresh" size={14} color="#f59e0b" />
-                        <Text className="text-amber-400 text-xs font-semibold">
-                          Retry BLE Scan
-                        </Text>
-                      </TouchableOpacity>
-                    )}
+                      {/* Retry button — only when no beacons detected */}
+                      {positioning.uniqueBeacons === 0 && positioning.active && (
+                        <TouchableOpacity
+                          className="flex-row items-center justify-center gap-2 bg-amber-500/15 border border-amber-500/30 rounded-xl py-2.5"
+                          onPress={() => {
+                            positioning.stop();
+                            positioning.start();
+                          }}
+                        >
+                          <Ionicons name="refresh" size={14} color="#f59e0b" />
+                          <Text className="text-amber-400 text-xs font-semibold">
+                            Retry BLE Scan
+                          </Text>
+                        </TouchableOpacity>
+                      )}
 
-                    {/* Debug controls — only in debugMode */}
-                    {debugMode && (
-                      <>
-                        {/* Compass / heading calibration readout. To calibrate a
+                      {/* Debug controls — only in debugMode */}
+                      {debugMode && (
+                        <>
+                          {/* Compass / heading calibration readout. To calibrate a
                             building's northOffsetDeg: stand in the corridor facing
                             the +x direction (increasing metres) and set
                             northOffsetDeg = (Compass − 90), normalised to 0-360. */}
-                        <View className="gap-1 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
-                          <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider">
-                            Heading / Compass
-                          </Text>
-                          <Text className="text-neutral-300 text-xs">
-                            Compass:{" "}
-                            {heading.headingDeg == null
-                              ? "—"
-                              : `${heading.headingDeg.toFixed(0)}°`}
-                            {heading.accuracyDeg != null &&
-                              `  (±${heading.accuracyDeg.toFixed(0)}°)`}
-                          </Text>
-                          <Text className="text-neutral-300 text-xs">
-                            Map heading:{" "}
-                            {headingMapDeg == null
-                              ? "—"
-                              : `${headingMapDeg.toFixed(0)}°`}
-                            {"   "}North offset: {northOffset.toFixed(0)}°
-                          </Text>
-                          <Text className="text-neutral-500 text-[10px]">
-                            Face +x (along corridor) → set offset = Compass − 90
-                          </Text>
-                        </View>
+                          <View className="gap-1 bg-neutral-900/40 border border-white/5 rounded-xl px-3 py-2">
+                            <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider">
+                              Heading / Compass
+                            </Text>
+                            <Text className="text-neutral-300 text-xs">
+                              Compass:{" "}
+                              {heading.headingDeg == null
+                                ? "—"
+                                : `${heading.headingDeg.toFixed(0)}°`}
+                              {heading.accuracyDeg != null &&
+                                `  (±${heading.accuracyDeg.toFixed(0)}°)`}
+                            </Text>
+                            <Text className="text-neutral-300 text-xs">
+                              Map heading:{" "}
+                              {headingMapDeg == null
+                                ? "—"
+                                : `${headingMapDeg.toFixed(0)}°`}
+                              {"   "}North offset: {northOffset.toFixed(0)}°
+                            </Text>
+                            <Text className="text-neutral-500 text-[10px]">
+                              Face +x (along corridor) → set offset = Compass − 90
+                            </Text>
+                          </View>
 
-                        {/* Model selector (GAT configs) */}
-                        <View className="gap-2">
-                          <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider px-1">
-                            Active Model Variant
-                          </Text>
-                          <TouchableOpacity
-                            onPress={() => setVariantSelectorOpen(!variantSelectorOpen)}
-                            className="flex-row items-center justify-between rounded-xl border border-white/10 bg-slate-900 px-4 py-3"
-                          >
-                            <View className="flex-row items-center gap-2">
-                              <View className="w-2 h-2 rounded-full bg-brand" />
-                              <Text className="text-xs font-semibold text-neutral-200">
-                                {getGatConfig(positioning.variant).label}
+                          {/* Model selector (GAT configs) */}
+                          <View className="gap-2">
+                            <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider px-1">
+                              Active Model Variant
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() => setVariantSelectorOpen(!variantSelectorOpen)}
+                              className="flex-row items-center justify-between rounded-xl border border-white/10 bg-slate-900 px-4 py-3"
+                            >
+                              <View className="flex-row items-center gap-2">
+                                <View className="w-2 h-2 rounded-full bg-brand" />
+                                <Text className="text-xs font-semibold text-neutral-200">
+                                  {getGatConfig(positioning.variant).label}
+                                </Text>
+                              </View>
+                              <Text className="text-neutral-400 text-xs">
+                                {variantSelectorOpen ? "▲" : "▼"}
                               </Text>
-                            </View>
-                            <Text className="text-neutral-400 text-xs">{variantSelectorOpen ? "▲" : "▼"}</Text>
-                          </TouchableOpacity>
+                            </TouchableOpacity>
 
-                          {variantSelectorOpen && (
-                            <View className="rounded-xl border border-white/10 bg-slate-900/90 p-1.5 gap-1 mt-1">
-                              {GAT_VARIANTS.map((v) => {
-                                const selected = positioning.variant === v;
-                                const cfg = getGatConfig(v);
+                            {variantSelectorOpen && (
+                              <View className="rounded-xl border border-white/10 bg-slate-900/90 p-1.5 gap-1 mt-1">
+                                {GAT_VARIANTS.map((v) => {
+                                  const selected = positioning.variant === v;
+                                  const cfg = getGatConfig(v);
+                                  return (
+                                    <TouchableOpacity
+                                      key={v}
+                                      onPress={() => {
+                                        positioning.setVariant(v);
+                                        setVariantSelectorOpen(false);
+                                      }}
+                                      className={`flex-row items-center justify-between rounded-lg px-3 py-2.5 ${
+                                        selected ? "bg-brand/20" : "bg-transparent"
+                                      }`}
+                                    >
+                                      <View className="flex-1 pr-4">
+                                        <Text
+                                          className={`text-xs font-bold ${selected ? "text-brand" : "text-neutral-200"}`}
+                                        >
+                                          {cfg.label}
+                                        </Text>
+                                        <Text className="text-neutral-500 text-[9px] mt-0.5">
+                                          Window: {cfg.windowSize}{" "}
+                                          {cfg.windowMode === "time" ? "ms" : "rows"}
+                                          {cfg.usesWifi ? " • WiFi" : " • No WiFi"}
+                                          {cfg.useBeaconYPos ? " • Coordinates" : ""}
+                                        </Text>
+                                      </View>
+                                      {selected && (
+                                        <View className="w-1.5 h-1.5 rounded-full bg-brand" />
+                                      )}
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            )}
+                          </View>
+
+                          {/* Smoother selector */}
+                          <View className="gap-2">
+                            <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider px-1">
+                              Smoother Mode
+                            </Text>
+                            <View className="flex-row gap-2">
+                              {(
+                                ["pdr", "kalman", "motion_gated", "velocity"] as const
+                              ).map((mode) => {
+                                const selected = positioning.postProcessMode === mode;
                                 return (
                                   <TouchableOpacity
-                                    key={v}
-                                    onPress={() => {
-                                      positioning.setVariant(v);
-                                      setVariantSelectorOpen(false);
-                                    }}
-                                    className={`flex-row items-center justify-between rounded-lg px-3 py-2.5 ${
-                                      selected ? "bg-brand/20" : "bg-transparent"
+                                    key={mode}
+                                    className={`flex-1 items-center justify-center rounded-xl border py-2 ${
+                                      selected
+                                        ? "bg-brand/20 border-brand/50"
+                                        : "bg-transparent border-white/10"
                                     }`}
+                                    onPress={() => positioning.setPostProcessMode(mode)}
                                   >
-                                    <View className="flex-1 pr-4">
-                                      <Text className={`text-xs font-bold ${selected ? "text-brand" : "text-neutral-200"}`}>
-                                        {cfg.label}
-                                      </Text>
-                                      <Text className="text-neutral-500 text-[9px] mt-0.5">
-                                        Window: {cfg.windowSize} {cfg.windowMode === "time" ? "ms" : "rows"}
-                                        {cfg.usesWifi ? " • WiFi" : " • No WiFi"}
-                                        {cfg.useBeaconYPos ? " • Coordinates" : ""}
-                                      </Text>
-                                    </View>
-                                    {selected && (
-                                      <View className="w-1.5 h-1.5 rounded-full bg-brand" />
-                                    )}
+                                    <Text
+                                      className={`text-[10px] font-semibold ${
+                                        selected ? "text-brand" : "text-neutral-300"
+                                      }`}
+                                    >
+                                      {mode === "motion_gated"
+                                        ? "Motion"
+                                        : mode === "pdr"
+                                          ? "PDR"
+                                          : mode === "velocity"
+                                            ? "Velocity"
+                                            : "Kalman"}
+                                    </Text>
                                   </TouchableOpacity>
                                 );
                               })}
                             </View>
-                          )}
-                        </View>
-
-                        {/* Smoother selector */}
-                        <View className="gap-2">
-                          <Text className="text-neutral-400 text-[10px] font-bold uppercase tracking-wider px-1">
-                            Smoother Mode
-                          </Text>
-                          <View className="flex-row gap-2">
-                            {(["pdr", "kalman", "motion_gated", "velocity"] as const).map((mode) => {
-                              const selected = positioning.postProcessMode === mode;
-                              return (
-                                <TouchableOpacity
-                                  key={mode}
-                                  className={`flex-1 items-center justify-center rounded-xl border py-2 ${
-                                    selected
-                                      ? "bg-brand/20 border-brand/50"
-                                      : "bg-transparent border-white/10"
-                                  }`}
-                                  onPress={() => positioning.setPostProcessMode(mode)}
-                                >
-                                  <Text
-                                    className={`text-[10px] font-semibold ${
-                                      selected ? "text-brand" : "text-neutral-300"
-                                    }`}
-                                  >
-                                    {mode === "motion_gated"
-                                      ? "Motion"
-                                      : mode === "pdr"
-                                        ? "PDR"
-                                        : mode === "velocity"
-                                          ? "Velocity"
-                                          : "Kalman"}
-                                  </Text>
-                                </TouchableOpacity>
-                              );
-                            })}
                           </View>
-                        </View>
 
-                        {/* Diagnostics text */}
-                        <Text className="text-neutral-400 text-xs px-1">
-                          {positioning.error ??
-                            (positioning.available ? "ONNX ready" : "Unavailable")}
-                        </Text>
-                      </>
-                    )}
-                  </View>
+                          {/* Diagnostics text */}
+                          <Text className="text-neutral-400 text-xs px-1">
+                            {positioning.error ??
+                              (positioning.available ? "ONNX ready" : "Unavailable")}
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  </ScrollView>
                 )}
               </View>
             )}
@@ -1409,8 +2170,69 @@ export function NavigationScreen() {
       <ShareLocationSheet
         visible={shareSheetOpen}
         onClose={() => setShareSheetOpen(false)}
-        onPick={(durationMin) => locationShare.start(durationMin)}
+        onPick={async (durationMin) => {
+          const share = await locationShare.start(durationMin);
+          if (share) setShareResultOpen(true);
+        }}
       />
+
+      {/* Link / QR / code panel for the active share */}
+      <ShareResultSheet
+        visible={shareResultOpen && locationShare.activeShare != null}
+        onClose={() => setShareResultOpen(false)}
+        onStop={locationShare.stop}
+        share={locationShare.activeShare}
+      />
+
+      {/* Viewer: follow a share by typing its 6-char code */}
+      <JoinShareSheet
+        visible={joinShareOpen}
+        onClose={() => setJoinShareOpen(false)}
+        onSubmit={(code) => {
+          setJoinShareOpen(false);
+          router.push(`/share/${encodeURIComponent(code)}` as any);
+        }}
+      />
+
+      {/* POI Review Modal */}
+      {selectedPreviewPoi && (
+        <PoiReviewModal
+          visible={reviewModalOpen}
+          poiId={selectedPreviewPoi.id}
+          poiName={selectedPreviewPoi.name}
+          onClose={() => setReviewModalOpen(false)}
+        />
+      )}
+
+      {/* Arrival review prompt — shown after "Rate this place" on the arrival alert */}
+      {arrivedPoi && (
+        <PoiReviewModal
+          visible={arrivalReviewOpen}
+          poiId={arrivedPoi.id}
+          poiName={arrivedPoi.name}
+          onClose={() => setArrivalReviewOpen(false)}
+        />
+      )}
+
+      {/* Hidden play/pause button for marketing recording */}
+      {bypassEnabled && bypassMode === "video" && !simLoading && !simError && (
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={toggleSimulation}
+          style={{
+            position: "absolute",
+            bottom: 20,
+            right: 20,
+            width: 60,
+            height: 60,
+            borderRadius: 30,
+            backgroundColor: "rgba(255, 255, 255, 0.001)", // completely invisible
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 99999,
+          }}
+        />
+      )}
     </View>
   );
 }

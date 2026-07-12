@@ -131,7 +131,7 @@ export function usePositioning(options: UsePositioningOptions = {}) {
   // Wall-clock of the last inference — gates the prediction cadence for the
   // time-window variant (nowifi_v3): dense ticks fill the window, predict per stride.
   const lastPredictAtRef = useRef(0);
-  const motion = useMotionSensors({ motionIntervalMs: 50, magIntervalMs: 50 });
+  const motion = useMotionSensors({ motionIntervalMs: 50, magIntervalMs: 50, enableLiveUpdates: false });
 
   // Warm the ONNX session for the active variant whenever it changes.
   useEffect(() => {
@@ -188,13 +188,7 @@ export function usePositioning(options: UsePositioningOptions = {}) {
     const localizer = localizerRef.current;
     localizer.addObservations(rows);
 
-    const bufferSize = localizer.bufferSize;
-    const uniqueBeacons = localizer.uniqueBeacons;
-    setState((p) =>
-      p.bufferSize === bufferSize && p.uniqueBeacons === uniqueBeacons
-        ? p
-        : { ...p, bufferSize, uniqueBeacons },
-    );
+
 
     // Time variants: add every dense sample to the window, but run inference only
     // once per stride. Count variants fall through and predict every tick.

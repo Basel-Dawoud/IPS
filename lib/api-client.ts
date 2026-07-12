@@ -55,7 +55,7 @@ apiClient.interceptors.response.use(
     const body = resp.data;
     if (body && typeof body === "object" && "success" in body) {
       if (body.success) {
-        resp.data = body.data;
+        resp.data = body.data !== undefined ? body.data : body;
         return resp;
       }
       return Promise.reject(new Error(body.error ?? "Request failed"));

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Share } from "react-native";
+import { Alert } from "react-native";
 import { createShare, stopShare } from "./api";
 import type { ShareDurationMin } from "./types";
 
 interface ActiveShare {
   token: string;
+  code: string;
   url: string;
   expiresAt: string | null;
 }
@@ -36,17 +37,18 @@ export function useLocationShare(buildingId: string | null) {
   }, [activeShare]);
 
   const start = useCallback(
-    async (durationMin: ShareDurationMin) => {
-      if (busy) return;
+    async (durationMin: ShareDurationMin): Promise<ActiveShare | null> => {
+      if (busy) return null;
       setBusy(true);
       try {
         const share = await createShare(buildingId, durationMin);
         setActiveShare(share);
         setRefreshKey((k) => k + 1);
-        // `message` (not `url`) so the link survives on Android share targets.
-        await Share.share({ message: `Follow my live location on Navimind: ${share.url}` });
+        // The in-app share panel now owns sharing/copying — the caller opens it.
+        return share;
       } catch (err: any) {
         Alert.alert("Couldn't share location", err?.message ?? "Please try again.");
+        return null;
       } finally {
         setBusy(false);
       }

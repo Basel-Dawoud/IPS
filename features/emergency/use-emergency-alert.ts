@@ -3,6 +3,15 @@ import { io, Socket } from "socket.io-client";
 import { env } from "@/lib/env";
 import { apiClient } from "@/lib/api-client";
 
+/** An inaccessible rectangle drawn by the admin, in floor-plan METER coords. */
+export interface BlockedZone {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  floorLevel: number;
+}
+
 export interface EmergencyData {
   id: string;
   buildingId: string;
@@ -10,6 +19,8 @@ export interface EmergencyData {
   message: string | null;
   gatheringPointId: string | null;
   blockedPoiIds: string[];
+  /** Inaccessible areas the navigation must route around. May be absent on older payloads. */
+  blockedZones?: BlockedZone[];
 }
 
 export function useEmergencyAlert(

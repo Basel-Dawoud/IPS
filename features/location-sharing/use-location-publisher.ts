@@ -31,6 +31,7 @@ export function useLocationPublisher({
 }: UseLocationPublisherProps) {
   const socketRef = useRef<Socket | null>(null);
   const lastEmitMsRef = useRef(0);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connect / disconnect with `enabled`.
   useEffect(() => {
@@ -48,14 +49,32 @@ export function useLocationPublisher({
     if (refreshKey > 0) socketRef.current?.emit("refresh_shares");
   }, [refreshKey]);
 
-  // Throttled publish on each position update.
+  // Throttled publish on each position update, with a trailing-edge emit so the
+  // final position always goes out even if updates arrive faster than the
+  // throttle (e.g. rapid bypass stepper taps while testing).
   useEffect(() => {
     const socket = socketRef.current;
     if (!enabled || !socket || !buildingId) return;
     if (x == null || y == null || floorLevel == null) return;
-    const now = Date.now();
-    if (now - lastEmitMsRef.current < PUBLISH_MIN_INTERVAL_MS) return;
-    lastEmitMsRef.current = now;
-    socket.emit("publish", { x, y, floorLevel, buildingId });
+
+    const emit = () => {
+      lastEmitMsRef.current = Date.now();
+      socket.emit("publish", { x, y, floorLevel, buildingId });
+    };
+
+    const sinceLast = Date.now() - lastEmitMsRef.current;
+    if (sinceLast >= PUBLISH_MIN_INTERVAL_MS) {
+      emit();
+    } else {
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = setTimeout(emit, PUBLISH_MIN_INTERVAL_MS - sinceLast);
+    }
+
+    return () => {
+      if (pendingTimerRef.current) {
+        clearTimeout(pendingTimerRef.current);
+        pendingTimerRef.current = null;
+      }
+    };
   }, [enabled, buildingId, x, y, floorLevel]);
 }

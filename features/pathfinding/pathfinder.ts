@@ -1,28 +1,29 @@
 /**
  * A* over the multi-floor occupancy grid (port of pathfinder.py). Nodes are
- * `[floorLevel, row, col]`. 4-connected within a floor; stair/elevator cells
- * allow a same-(row,col) transition to the other floor. Default "Normal" cost
- * model (1 per step, a fixed penalty per floor change).
+ * `[floorLevel, row, col]`. 4-connected within a floor. Floor changes are
+ * POI-driven: STAIRS/ELEVATOR POIs are materialized into a portal graph (see
+ * index.ts) that links a portal cell to its matched counterpart on other floors.
+ * Default "Normal" cost model (1 per step, a fixed penalty per floor change).
  */
-import {
-  ELEVATOR,
-  FLOOR_LEVELS,
-  FloorGrid,
-  STAIRS,
-  cellAt,
-  elevatorHub,
-  floorIndex,
-  getGrid,
-  inBounds,
-} from "./grid-data";
+import { FloorGrid, floorIndex, getGrid, inBounds } from "./grid-data";
 import { isWalkable } from "./grid-manager";
 
 export type PathCell = [floorLevel: number, row: number, col: number];
+
+/** One floor-change edge from a portal cell to its matched portal on another floor. */
+export interface PortalEdge {
+  next: PathCell;
+  type: "STAIRS" | "ELEVATOR";
+}
+
+/** Portal cell key (`${floor},${row},${col}`) → outgoing floor-change edges. */
+export type PortalGraph = Map<string, PortalEdge[]>;
 
 /** Routing options. `stepFree` bans stair floor-changes (accessibility). */
 export interface PathOptions {
   stepFree?: boolean;
   blockedCells?: Set<string>;
+  portals?: PortalGraph;
 }
 
 const FLOOR_CHANGE_COST = 15;
@@ -99,34 +100,16 @@ function neighbors(node: PathCell, opts?: PathOptions): { next: PathCell; cost: 
     }
   }
 
-  const here = cellAt(g, r, c);
-
-  // Stairs: hop to the same (row, col) on another floor (the bundled grids align
-  // stairs cell-for-cell). Banned for step-free routing.
-  if (here === STAIRS && !opts?.stepFree) {
-    for (const other of FLOOR_LEVELS) {
-      if (other === f) continue;
-      const og = getGrid(other);
-      if (!og || !inBounds(og, r, c)) continue;
-      if (cellAt(og, r, c) === STAIRS) {
-        if (!opts?.blockedCells?.has(key(other, r, c)) && !opts?.blockedCells?.has(key(f, r, c))) {
-          out.push({ next: [other, r, c], cost: FLOOR_CHANGE_COST });
-        }
-      }
-    }
-  }
-
-  // Elevator: the regions do NOT align across floors, so link this floor's
-  // elevator to the other floor's elevator hub as a vertical portal.
-  if (here === ELEVATOR) {
-    for (const other of FLOOR_LEVELS) {
-      if (other === f) continue;
-      const hub = elevatorHub(other);
-      if (hub) {
-        if (!opts?.blockedCells?.has(key(other, hub[0], hub[1])) && !opts?.blockedCells?.has(key(f, r, c))) {
-          out.push({ next: [other, hub[0], hub[1]], cost: FLOOR_CHANGE_COST });
-        }
-      }
+  // POI-driven floor changes: standing on a portal cell links to its matched
+  // portal(s) on other floors. Step-free routing bans stairs; blocked target
+  // cells (emergency zones) are skipped.
+  const portalEdges = opts?.portals?.get(key(f, r, c));
+  if (portalEdges) {
+    for (const e of portalEdges) {
+      if (opts?.stepFree && e.type === "STAIRS") continue;
+      const [tf, tr, tc] = e.next;
+      if (opts?.blockedCells?.has(key(tf, tr, tc))) continue;
+      out.push({ next: e.next, cost: FLOOR_CHANGE_COST });
     }
   }
 

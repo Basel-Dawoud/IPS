@@ -9,11 +9,13 @@ export interface LivePosition {
 
 export interface ShareCreateResult {
   token: string;
+  code: string;
   url: string;
   expiresAt: string | null;
 }
 
 export interface SharePublicView {
+  token: string;
   owner: { name: string | null; avatarUrl: string | null };
   building: {
     id: string;

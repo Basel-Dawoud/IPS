@@ -42,7 +42,12 @@ export default function FriendsScreen() {
   const queryClient = useQueryClient();
   const [code, setCode] = useState("");
 
-  const { data: friends, isLoading, refetch, isRefetching } = useQuery({
+  const {
+    data: friends,
+    isLoading,
+    refetch,
+    isRefetching,
+  } = useQuery({
     queryKey: ["friends"],
     queryFn: fetchFriends,
     refetchInterval: 15_000, // keep presence fresh while the screen is open
@@ -53,7 +58,10 @@ export default function FriendsScreen() {
     onSuccess: (res) => {
       setCode("");
       queryClient.invalidateQueries({ queryKey: ["friends"] });
-      Alert.alert("Friend added", `You and ${res.friend?.name ?? "your friend"} are now friends.`);
+      Alert.alert(
+        "Friend added",
+        `You and ${res.friend?.name ?? "your friend"} are now friends.`,
+      );
     },
     onError: (err: any) => {
       Alert.alert("Couldn't add friend", err?.message ?? "Check the code and try again.");
@@ -130,7 +138,7 @@ export default function FriendsScreen() {
             <TextInput
               value={code}
               onChangeText={(t) => setCode(t.toUpperCase())}
-              placeholder="e.g. K7X2M9"
+              placeholder="K7X2M9"
               placeholderTextColor="#475569"
               autoCapitalize="characters"
               maxLength={6}
@@ -162,8 +170,8 @@ export default function FriendsScreen() {
             </View>
             <Text className="text-white font-bold text-lg">No friends yet</Text>
             <Text className="text-neutral-400 text-center text-sm px-6">
-              Add a friend with a QR code or invite link — then you'll see each other on the
-              map whenever you're in a building.
+              Add a friend with a QR code or invite link — then you'll see each other on
+              the map whenever you're in a building.
             </Text>
           </View>
         ) : (
@@ -190,7 +198,10 @@ export default function FriendsScreen() {
                     )}
                   </View>
                   <View className="flex-1">
-                    <Text className="text-white font-semibold text-base" numberOfLines={1}>
+                    <Text
+                      className="text-white font-semibold text-base"
+                      numberOfLines={1}
+                    >
                       {entry.user.name ?? "Friend"}
                     </Text>
                     <View className="flex-row items-center gap-1.5 mt-0.5">
@@ -207,7 +218,9 @@ export default function FriendsScreen() {
                   </View>
                   {line.live ? (
                     <View className="bg-emerald-500/15 border border-emerald-500/40 rounded-full px-3 py-1.5">
-                      <Text className="text-emerald-300 text-[11px] font-bold">Find them</Text>
+                      <Text className="text-emerald-300 text-[11px] font-bold">
+                        Find them
+                      </Text>
                     </View>
                   ) : (
                     <Ionicons name="chevron-forward" size={18} color="#64748b" />
