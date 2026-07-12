@@ -1,5 +1,11 @@
 import { axiosClient } from "@/lib/axiosClient";
-import type { GrantInternalRoleInput, InternalRoleListItem, InternalUserListItem } from "./types";
+import type {
+  CreateInternalRoleInput,
+  GrantInternalRoleInput,
+  InternalPermissionItem,
+  InternalRoleListItem,
+  InternalUserListItem,
+} from "./types";
 
 export async function getInternalUsers(): Promise<InternalUserListItem[]> {
   const res = await axiosClient.get("/internal-auth/users");
@@ -8,6 +14,16 @@ export async function getInternalUsers(): Promise<InternalUserListItem[]> {
 
 export async function getInternalRoles(): Promise<InternalRoleListItem[]> {
   const res = await axiosClient.get("/internal-auth/users/roles");
+  return res.data.data;
+}
+
+export async function getInternalPermissions(): Promise<InternalPermissionItem[]> {
+  const res = await axiosClient.get("/internal-auth/users/permissions");
+  return res.data.data;
+}
+
+export async function createInternalRole(input: CreateInternalRoleInput): Promise<InternalRoleListItem> {
+  const res = await axiosClient.post("/internal-auth/users/roles", input);
   return res.data.data;
 }
 

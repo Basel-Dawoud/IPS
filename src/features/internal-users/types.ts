@@ -5,15 +5,18 @@ export interface InternalUserListItem {
   roleId: string;
   roleKey: string;
   roleName: string;
-  grantedByEmail: string | null;
 }
 
 export interface InternalRoleListItem {
   id: string;
   key: string;
   name: string;
-  isSystem: boolean;
   permissions: string[];
+}
+
+export interface InternalPermissionItem {
+  key: string;
+  description: string | null;
 }
 
 export interface GrantInternalRoleInput {
@@ -22,4 +25,10 @@ export interface GrantInternalRoleInput {
   /** Only required if this email has no existing Navimind account yet. */
   password?: string;
   name?: string;
+}
+
+export interface CreateInternalRoleInput {
+  key: string;
+  name: string;
+  permissionKeys: string[];
 }
