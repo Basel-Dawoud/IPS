@@ -86,36 +86,40 @@ import clientSearchRoutes from "./modules/client/search/search.routes";
 import clientLocationSharingRoutes from "./modules/client/location-sharing/location-sharing.routes";
 import clientFriendsRoutes from "./modules/client/location-sharing/friends.routes";
 import adminIpsRoutes from "./modules/admin/ips/ips.routes";
+import internalUsersRoutes from "./modules/internal-auth/internal-users/internal-users.routes";
 import { optionalAuth } from "./middleware/optional-auth";
+import { optionalInternalAuth, requireInternalAuth } from "./middleware/internal-auth";
 
 app.use(optionalAuth);
+app.use(optionalInternalAuth);
 
 app.use("/api/auth", authRoutes);
-app.use("/api/admin/buildings", adminBuildingRoutes);
-app.use("/api/admin/buildings/:buildingId/emergency", adminEmergencyRoutes);
+app.use("/api/internal-auth/users", internalUsersRoutes);
+app.use("/api/admin/buildings", requireInternalAuth, adminBuildingRoutes);
+app.use("/api/admin/buildings/:buildingId/emergency", requireInternalAuth, adminEmergencyRoutes);
 app.use("/api/client/buildings", clientBuildingRoutes);
 app.use("/api/client/buildings/:buildingId/emergency", clientEmergencyRoutes);
-app.use("/api/admin/floors", adminFloorRoutes);
+app.use("/api/admin/floors", requireInternalAuth, adminFloorRoutes);
 app.use("/api/client/floors", clientFloorRoutes);
-app.use("/api/admin/beacons", adminBeaconRoutes);
+app.use("/api/admin/beacons", requireInternalAuth, adminBeaconRoutes);
 app.use("/api/client/positioning", clientPositioningRoutes);
-app.use("/api/admin/map", adminMapRoutes);
-app.use("/api/admin/pois", adminPoiRoutes);
+app.use("/api/admin/map", requireInternalAuth, adminMapRoutes);
+app.use("/api/admin/pois", requireInternalAuth, adminPoiRoutes);
 app.use("/api/client/pois", clientPoiRoutes);
 app.use("/api/client/navigation", clientNavigationRoutes);
 app.use("/api/client/chat/sessions", clientChatSessionRoutes);
 app.use("/api/client/recommendations", clientRecommendationRoutes);
 app.use("/api/client/user", clientUserRoutes);
-app.use("/api/admin/fingerprinting", adminFingerprintingRoutes);
-app.use("/api/admin/trajectory", adminTrajectoryRoutes);
-app.use("/api/admin/wifi-aps", adminWifiApRoutes);
-app.use("/api/admin/deals", adminDealRoutes);
+app.use("/api/admin/fingerprinting", requireInternalAuth, adminFingerprintingRoutes);
+app.use("/api/admin/trajectory", requireInternalAuth, adminTrajectoryRoutes);
+app.use("/api/admin/wifi-aps", requireInternalAuth, adminWifiApRoutes);
+app.use("/api/admin/deals", requireInternalAuth, adminDealRoutes);
 app.use("/api/client/deals", clientDealRoutes);
 app.use("/api/client/visits", clientVisitRoutes);
 app.use("/api/client/search", clientSearchRoutes);
 app.use("/api/client/location-sharing", clientLocationSharingRoutes);
 app.use("/api/client/friends", clientFriendsRoutes);
-app.use("/api/admin/ips", adminIpsRoutes);
+app.use("/api/admin/ips", requireInternalAuth, adminIpsRoutes);
 
 app.use(
   (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

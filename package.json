@@ -6,7 +6,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon",
     "build": "npx prisma generate && tsc",
-    "start": "node dist/app.js"
+    "start": "node dist/app.js",
+    "seed:internal-rbac": "ts-node prisma/seed-internal-rbac.ts"
   },
   "keywords": [],
   "author": "",

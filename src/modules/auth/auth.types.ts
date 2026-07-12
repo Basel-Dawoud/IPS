@@ -1,3 +1,10 @@
+export interface InternalRoleSummary {
+  roleId: string;
+  roleKey: string;
+  roleName: string;
+  permissions: string[];
+}
+
 export interface PublicUser {
   id: string;
   email: string | null;
@@ -10,6 +17,8 @@ export interface PublicUser {
   needsStepFree: boolean;
   shareWithFriends: boolean;
   hasPassword: boolean;
+  /** Null = ordinary app user, no dashboard/admin access. */
+  internalRole: InternalRoleSummary | null;
 }
 
 export interface AuthResult {

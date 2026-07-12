@@ -127,8 +127,21 @@ function toPublicUser(u: any): PublicUser {
     needsStepFree: u.needsStepFree ?? false,
     shareWithFriends: u.shareWithFriends ?? true,
     hasPassword: !!u.passwordHash,
+    internalRole:
+      u.internalRoleId && u.internalRole
+        ? {
+            roleId: u.internalRoleId,
+            roleKey: u.internalRole.key,
+            roleName: u.internalRole.name,
+            permissions: u.internalRole.permissions.map((rp: any) => rp.permission.key),
+          }
+        : null,
   };
 }
+
+const INTERNAL_ROLE_INCLUDE = {
+  internalRole: { include: { permissions: { include: { permission: true } } } },
+} as const;
 
 async function findOrCreateFromIdentity(args: {
   provider: AuthProvider;
@@ -141,7 +154,7 @@ async function findOrCreateFromIdentity(args: {
 
   const existing = await prisma.identity.findUnique({
     where: { provider_providerUserId: { provider, providerUserId } },
-    include: { user: { include: { interests: true } } },
+    include: { user: { include: { interests: true, ...INTERNAL_ROLE_INCLUDE } } },
   });
   if (existing) return toPublicUser(existing.user);
 
@@ -149,7 +162,7 @@ async function findOrCreateFromIdentity(args: {
   const linkedUser = email
     ? await prisma.user.findUnique({
         where: { email },
-        include: { interests: true },
+        include: { interests: true, ...INTERNAL_ROLE_INCLUDE },
       })
     : null;
 
@@ -229,7 +242,7 @@ export async function verifyAppToken(token: string): Promise<AppJwtPayload> {
 export async function getUserById(id: string): Promise<PublicUser | null> {
   const u = await prisma.user.findUnique({
     where: { id },
-    include: { interests: true },
+    include: { interests: true, ...INTERNAL_ROLE_INCLUDE },
   });
   return u ? toPublicUser(u) : null;
 }
@@ -289,7 +302,7 @@ export async function loginWithEmail(
 ): Promise<AuthResult> {
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { interests: true },
+    include: { interests: true, ...INTERNAL_ROLE_INCLUDE },
   });
   if (!user || !user.passwordHash) {
     throw new AuthError("invalid-token", "Invalid email or password");

@@ -9,6 +9,13 @@ declare global {
         id: string;
         email?: string;
       };
+      internalUser?: {
+        id: string;
+        email: string;
+        roleId: string;
+        roleKey: string;
+        permissions: string[];
+      };
     }
   }
 }

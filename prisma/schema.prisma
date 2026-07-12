@@ -540,6 +540,10 @@ model User {
   friendshipsInitiated Friendship[] @relation("FriendshipRequester")
   friendshipsReceived  Friendship[] @relation("FriendshipAddressee")
   presence       UserPresence?
+
+  // Internal/staff access.
+  internalRoleId String?
+  internalRole   InternalRole? @relation(fields: [internalRoleId], references: [id])
 }
 
 
@@ -616,16 +620,36 @@ model Identity {
   @@index([userId])
 }
 
-// -------------------- Trajectory-based fingerprinting (collection only) --------------------
-//
-// Parallel pipeline to the point-based BleFingerprint flow above. We persist
-// raw walks (continuous IMU + BLE + WiFi streams plus on-device step events)
-// so a downstream ML team can train sequence models without us locking them
-// into a particular segmentation or labelling strategy.
-//
-// Isolated from the existing fingerprint tables: `buildingId` is stored as a
-// plain string with the FK enforced only in raw SQL (see migration), so this
-// section adds no fields/relations to Building, Floor, or any existing model.
+
+model InternalRole {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  permissions InternalRolePermission[]
+}
+
+model InternalPermission {
+  id          String  @id @default(cuid())
+  key         String  @unique 
+  description String?
+
+  roles InternalRolePermission[]
+}
+
+model InternalRolePermission {
+  roleId       String
+  role         InternalRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   InternalPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
 
 model TrajectorySession {
   id           String                @id @default(cuid())
