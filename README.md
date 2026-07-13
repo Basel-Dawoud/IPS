@@ -34,6 +34,9 @@ an aspirational spec.
 
 ## 2. Architecture
 
+<img width="1071" height="624" alt="image" src="https://github.com/user-attachments/assets/92ab00a1-bbb9-4f6d-adcf-420befc4ce3e" />
+
+
 ```
 phone.py (simulator)
     │
