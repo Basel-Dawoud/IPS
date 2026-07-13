@@ -62,7 +62,7 @@ export const search = async (q: string): Promise<SearchResults> => {
         floorLevel: true,
         buildingId: true,
         building: { select: { name: true } },
-        category: { select: { name: true } },
+        categories: { select: { name: true, parentId: true } },
       },
       take: 12,
     }),
@@ -74,7 +74,8 @@ export const search = async (q: string): Promise<SearchResults> => {
       id: p.id,
       name: p.name,
       code: p.code,
-      category: p.category?.name ?? null,
+      category:
+        (p.categories.find((c) => c.parentId) ?? p.categories[0])?.name ?? null,
       x: p.x,
       y: p.y,
       floorLevel: p.floorLevel,

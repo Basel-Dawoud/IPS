@@ -8,7 +8,7 @@ import {
   sendServerError,
 } from "../../../utils/response";
 import { AVATARS_UPLOAD_DIR, publicUrlForAvatar } from "../../../lib/upload";
-import { updateProfileSchema } from "./user.schema";
+import { updateProfileSchema, createFeedbackSchema } from "./user.schema";
 
 /** Shape the app expects from /auth/me — kept in sync so refreshMe reads cleanly. */
 function toPublicUser(u: any) {
@@ -29,7 +29,10 @@ function toPublicUser(u: any) {
 
 export const getCategories = async (req: Request, res: Response) => {
   try {
+    // Onboarding interests = the top-level categories only (parentId null);
+    // the granular sub-categories are used for products, not interests.
     const categories = await prisma.poiCategory.findMany({
+      where: { parentId: null },
       orderBy: { name: "asc" },
     });
     return sendSuccess(res, categories);
@@ -96,7 +99,10 @@ export const getRecentVisits = async (req: Request, res: Response) => {
       take: 40,
       include: {
         poi: {
-          include: { building: true, category: true },
+          include: {
+            building: true,
+            categories: { select: { name: true, parentId: true } },
+          },
         },
       },
     });
@@ -115,7 +121,8 @@ export const getRecentVisits = async (req: Request, res: Response) => {
         y: v.poi.y,
         buildingId: v.poi.buildingId,
         buildingName: v.poi.building?.name ?? null,
-        categoryName: v.poi.category?.name ?? null,
+        categoryName:
+          (v.poi.categories.find((c) => c.parentId) ?? v.poi.categories[0])?.name ?? null,
         visitedAt: v.createdAt,
       });
       if (recent.length >= 20) break;
@@ -266,5 +273,34 @@ export const skipOnboarding = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("[user.controller] skipOnboarding error:", error);
     return sendServerError(res, "Failed to skip onboarding");
+  }
+};
+
+export const createFeedback = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, error: "Authentication required" });
+    }
+
+    const result = createFeedbackSchema.safeParse(req.body);
+    if (!result.success) {
+      return sendBadRequest(res, result.error.issues[0]?.message || "Invalid input");
+    }
+
+    const { type, description } = result.data;
+
+    const feedback = await prisma.userFeedback.create({
+      data: {
+        userId,
+        type,
+        description,
+      },
+    });
+
+    return sendSuccess(res, feedback);
+  } catch (error: any) {
+    console.error("[user.controller] createFeedback error:", error);
+    return sendServerError(res, "Failed to submit feedback");
   }
 };

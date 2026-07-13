@@ -2,22 +2,23 @@ import prisma from "../../../lib/prisma";
 import { CreatePoiInput, UpdatePoiInput } from "./pois.types";
 import type { TransitionRegions } from "../../../lib/grid-vectorize";
 
-const flattenCategory = <T extends { category?: { name: string } | null }>(
-  poi: T,
-): Omit<T, "category"> & { category: string | null } => ({
-  ...poi,
-  category: poi.category?.name ?? null,
-});
+type CatNode = { id: string; name: string; parentId: string | null };
 
-const resolveCategoryId = async (name: string): Promise<string> => {
-  const trimmed = name.trim();
-  const cat = await prisma.poiCategory.upsert({
-    where: { name: trimmed },
-    update: {},
-    create: { name: trimmed },
-  });
-  return cat.id;
+// Flatten the many-to-many `categories` relation into a structured list plus a
+// single `category` name (the first sub-category, else the first category) for
+// legacy single-category consumers (app map, search, chat.retrieval).
+const flattenCategory = <T extends { categories?: CatNode[] }>(poi: T) => {
+  const cats = poi.categories ?? [];
+  const primary = cats.find((c) => c.parentId) ?? cats[0];
+  const { categories: _drop, ...rest } = poi;
+  return {
+    ...rest,
+    categories: cats.map((c) => ({ id: c.id, name: c.name, parentId: c.parentId })),
+    category: primary?.name ?? null,
+  };
 };
+
+const CAT_SELECT = { select: { id: true, name: true, parentId: true } } as const;
 const touchBuildingPoiUpdated = async (buildingId: string) => {
   try {
     await prisma.building.update({
@@ -30,14 +31,18 @@ const touchBuildingPoiUpdated = async (buildingId: string) => {
 };
 
 export const createPoi = async (data: CreatePoiInput) => {
-  const { category, ...rest } = data;
-  // Explicit categoryId wins; otherwise map the free-text name.
-  if (rest.categoryId === undefined && category?.trim()) {
-    rest.categoryId = await resolveCategoryId(category);
-  }
-  const poi = await prisma.poi.create({ data: rest });
+  const { categoryIds, ...rest } = data;
+  const poi = await prisma.poi.create({
+    data: {
+      ...rest,
+      ...(categoryIds && categoryIds.length
+        ? { categories: { connect: categoryIds.map((id) => ({ id })) } }
+        : {}),
+    },
+    include: { categories: CAT_SELECT },
+  });
   await touchBuildingPoiUpdated(poi.buildingId);
-  return poi;
+  return flattenCategory(poi);
 };
 
 // Auto-create STAIRS/ELEVATOR POIs from detected grid regions (one per shaft),
@@ -98,7 +103,7 @@ export const getPois = async (buildingId: string, floorLevel?: number) => {
       buildingId,
       ...(floorLevel !== undefined ? { floorLevel } : {}),
     },
-    include: { category: true },
+    include: { categories: CAT_SELECT },
     orderBy: [{ floorLevel: "asc" }, { name: "asc" }],
   });
   return pois.map(flattenCategory);
@@ -107,24 +112,26 @@ export const getPois = async (buildingId: string, floorLevel?: number) => {
 export const getPoiById = async (id: string) => {
   const poi = await prisma.poi.findUnique({
     where: { id },
-    include: { category: true },
+    include: { categories: CAT_SELECT },
   });
   return poi ? flattenCategory(poi) : poi;
 };
 
 export const updatePoi = async (id: string, data: UpdatePoiInput) => {
-  const { category, ...rest } = data;
-  let categoryId: string | null | undefined = rest.categoryId;
-  if (categoryId === undefined && category !== undefined) {
-    // Free-text name: resolve to an id; empty string clears the category.
-    categoryId = category.trim() ? await resolveCategoryId(category) : null;
-  }
+  const { categoryIds, ...rest } = data;
   const poi = await prisma.poi.update({
     where: { id },
-    data: { ...rest, ...(categoryId !== undefined ? { categoryId } : {}) },
+    data: {
+      ...rest,
+      // `set` replaces the whole membership; omit when categoryIds not sent.
+      ...(categoryIds !== undefined
+        ? { categories: { set: categoryIds.map((cid) => ({ id: cid })) } }
+        : {}),
+    },
+    include: { categories: CAT_SELECT },
   });
   await touchBuildingPoiUpdated(poi.buildingId);
-  return poi;
+  return flattenCategory(poi);
 };
 
 export const deletePoi = async (id: string) => {
@@ -152,7 +159,7 @@ export const addPoiGalleryImage = async (id: string, imageUrl: string) => {
   const updated = await prisma.poi.update({
     where: { id },
     data: { images: { push: imageUrl } },
-    include: { category: true },
+    include: { categories: CAT_SELECT },
   });
   await touchBuildingPoiUpdated(updated.buildingId);
   return flattenCategory(updated);
@@ -165,7 +172,7 @@ export const removePoiGalleryImage = async (id: string, imageUrl: string) => {
   const updated = await prisma.poi.update({
     where: { id },
     data: { images },
-    include: { category: true },
+    include: { categories: CAT_SELECT },
   });
   await touchBuildingPoiUpdated(updated.buildingId);
   return flattenCategory(updated);

@@ -406,11 +406,12 @@ model Poi {
   areaH Float?
 
 
-  description     String? 
-  category        PoiCategory? @relation(fields: [categoryId], references: [id])
-  categoryId      String?
-  aliases         String[] @default([]) 
-  productKeywords String[] @default([]) 
+  description     String?
+  // Many-to-many into the taxonomy tree: a POI can hold multiple categories AND
+  // sub-categories (level inferred from PoiCategory.parentId).
+  categories      PoiCategory[] @relation("PoiCategories")
+  aliases         String[] @default([])
+  productKeywords String[] @default([])
   images          String[] @default([])
 
   avgRating   Float @default(0)
@@ -446,14 +447,28 @@ enum PoiType {
 }
 
 
+// Admin-managed 2-level taxonomy tree. A row with parentId == null is a
+// "category" (the onboarding-interest level); a row with a parent is a
+// "sub-category" (the granular, product level). `keywords` are suggested onto a
+// POI's productKeywords when the node is assigned to it.
 model PoiCategory {
   id          String   @id @default(cuid())
   name        String   @unique
   description String?
-  pois        Poi[]
-  users       User[]   @relation("UserInterests")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  keywords    String[] @default([])
+
+  parentId String?
+  parent   PoiCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children PoiCategory[] @relation("CategoryTree")
+
+  pois     Poi[]     @relation("PoiCategories")
+  products Product[]
+  users    User[]    @relation("UserInterests")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId])
 }
 
 // A purchasable product sold by a store (Poi). Seeded from the AI engineer's
@@ -474,6 +489,11 @@ model Product {
   // subCategory "Samsung mobiles"). Used to group/rank within a store.
   category    String?
   subCategory String?
+
+  // Link into the shared PoiCategory interest taxonomy (resolved from `category`
+  // at seed time). Enables interest-personalized product recommendations.
+  poiCategory   PoiCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId    String?
 
   // The store that sells it. Nullable so a product whose category can't be
   // mapped to a Poi is still retained.
@@ -580,6 +600,7 @@ model User {
   friendshipsInitiated Friendship[] @relation("FriendshipRequester")
   friendshipsReceived  Friendship[] @relation("FriendshipAddressee")
   presence       UserPresence?
+  feedbacks      UserFeedback[]
 
   // Internal/staff access.
   internalRoleId String?
@@ -942,5 +963,16 @@ model EmergencyAlert {
   blockedZones     Json[]    // List of inaccessible area zones {x,y,w,h,floorLevel}
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+}
+
+model UserFeedback {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String   // "BUG" | "FEATURE" | "SUGGESTION"
+  description String
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
 }
 

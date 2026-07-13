@@ -20,11 +20,33 @@ export interface ChatbotServiceReply extends ChatReply {
 
 export async function callChatbotService(
   input: ChatMessageInput,
-  lang: "en" | "ar"
+  lang: "en" | "ar",
+  userId?: string
 ): Promise<ChatbotServiceReply | null> {
   const serviceUrl = process.env.CHATBOT_SERVICE_URL || "http://127.0.0.1:8000";
   // Qwen on CPU can take a few seconds; default generously.
   const timeoutMs = Number(process.env.CHATBOT_SERVICE_TIMEOUT_MS || 60000);
+
+  // The logged-in user's interest categories personalize product recommendations.
+  // Interests are stored at the parent-category level; products carry sub-category
+  // names, so expand each interest to its sub-categories (+ itself) before sending.
+  let interests: string[] = [];
+  if (userId) {
+    try {
+      const u = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { interests: { include: { children: { select: { name: true } } } } },
+      });
+      const set = new Set<string>();
+      for (const parent of u?.interests ?? []) {
+        set.add(parent.name);
+        for (const child of parent.children) set.add(child.name);
+      }
+      interests = [...set];
+    } catch (err) {
+      console.error("[chat.llm] Error fetching user interests:", err);
+    }
+  }
 
   // 1. Get the building's POI + product version timestamps
   let version = new Date().toISOString();
@@ -66,6 +88,7 @@ export async function callChatbotService(
         pendingPoiId: input.lastSuggestedPoiId ?? null,
         version,
         productsVersion,
+        interests,
         pois: poisPayload,
       };
 
@@ -122,6 +145,7 @@ export async function callChatbotService(
           type: p.type,
           floorLevel: p.floorLevel,
           category: p.category ?? null,
+          categories: (p.categories ?? []).map((c) => c.name),
           description: p.description,
           aliases: p.aliases ?? [],
           productKeywords: p.productKeywords ?? [],

@@ -31,6 +31,14 @@ function getDistance(x1: number, y1: number, x2: number, y2: number): number {
   return Math.sqrt(Math.pow(x1 - x2, 2) + Math.pow(y1 - y2, 2));
 }
 
+// The interest-level (parent) category ids a POI belongs to: any parent node
+// linked directly, plus the parent of any linked sub-category.
+function parentCategoryIds(cats: { id: string; parentId: string | null }[]): string[] {
+  const ids = new Set<string>();
+  for (const c of cats) ids.add(c.parentId ?? c.id);
+  return [...ids];
+}
+
 export async function getRecommendations(
   input: RecommendationInput,
 ): Promise<RecommendedPoi[]> {
@@ -40,7 +48,10 @@ export async function getRecommendations(
   // no building context (global home recommendations).
   const pois = await prisma.poi.findMany({
     where: { active: true, ...(buildingId ? { buildingId } : {}) },
-    include: { category: true, building: { select: { name: true } } },
+    include: {
+      categories: { select: { id: true, name: true, parentId: true } },
+      building: { select: { name: true } },
+    },
   });
 
   if (pois.length === 0) return [];
@@ -122,14 +133,14 @@ export async function getRecommendations(
     try {
       const personalVisits = await prisma.poiVisit.findMany({
         where: { userId, ...(buildingId ? { buildingId } : {}) },
-        include: { poi: true },
+        include: { poi: { include: { categories: { select: { id: true, parentId: true } } } } },
       });
       totalPersonalVisits = personalVisits.length;
       for (const v of personalVisits) {
         personalVisitCounts[v.poiId] = (personalVisitCounts[v.poiId] || 0) + 1;
-        if (v.poi.categoryId) {
-          personalCategoryCounts[v.poi.categoryId] =
-            (personalCategoryCounts[v.poi.categoryId] || 0) + 1;
+        // Category affinity is tracked at the parent-category (interest) level.
+        for (const pid of parentCategoryIds(v.poi.categories)) {
+          personalCategoryCounts[pid] = (personalCategoryCounts[pid] || 0) + 1;
         }
       }
     } catch (err) {
@@ -144,8 +155,10 @@ export async function getRecommendations(
 
   // 5. Score POIs
   const scored = pois.map((poi) => {
-    // A. Interest score
-    const interestMatch = userInterests.includes(poi.categoryId || "") ? 1.0 : 0.0;
+    const poiParents = parentCategoryIds(poi.categories);
+
+    // A. Interest score — POI belongs to a category the user is interested in.
+    const interestMatch = poiParents.some((pid) => userInterests.includes(pid)) ? 1.0 : 0.0;
 
     // B. Distance score
     let distanceScore = 0.0;
@@ -172,9 +185,12 @@ export async function getRecommendations(
     // F. Personal History score
     const historyScore = (personalVisitCounts[poi.id] || 0) / maxPersonalVisits;
 
-    // G. Search / Category match score
-    const categoryScore =
-      (personalCategoryCounts[poi.categoryId || ""] || 0) / maxPersonalCategoryVisits;
+    // G. Category-affinity score — best match among the POI's parent categories.
+    const catAffinity = poiParents.reduce(
+      (best, pid) => Math.max(best, personalCategoryCounts[pid] || 0),
+      0,
+    );
+    const categoryScore = catAffinity / maxPersonalCategoryVisits;
 
     // Weight combinations
     let score = 0;
@@ -216,7 +232,8 @@ export async function getRecommendations(
       avgRating: poi.avgRating,
       reviewCount: poi.reviewCount,
       visitCount: poi.visitCount,
-      categoryName: poi.category?.name || null,
+      categoryName:
+        (poi.categories.find((c) => c.parentId) ?? poi.categories[0])?.name || null,
       buildingId: poi.buildingId,
       buildingName: poi.building.name,
       score: Number(score.toFixed(4)),

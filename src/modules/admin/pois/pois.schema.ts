@@ -16,8 +16,7 @@ export const createPoiSchema = z.object({
   areaW: z.number().positive().nullable().optional(),
   areaH: z.number().positive().nullable().optional(),
   description: z.string().optional(),
-  categoryId: z.string().optional(),
-  category: z.string().optional(), // free-text category name (connectOrCreate)
+  categoryIds: z.array(z.string()).optional(), // taxonomy node ids (categories + sub-categories)
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
   images: z.array(z.string()).optional(),
@@ -38,8 +37,7 @@ export const updatePoiSchema = z.object({
   areaW: z.number().positive().nullable().optional(),
   areaH: z.number().positive().nullable().optional(),
   description: z.string().optional(),
-  categoryId: z.string().optional(),
-  category: z.string().optional(), // free-text name; "" disconnects
+  categoryIds: z.array(z.string()).optional(), // replaces the POI's whole membership
   aliases: z.array(z.string()).optional(),
   productKeywords: z.array(z.string()).optional(),
   images: z.array(z.string()).optional(),

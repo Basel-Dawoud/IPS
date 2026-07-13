@@ -10,3 +10,10 @@ export const updateProfileSchema = z.object({
 });
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+
+export const createFeedbackSchema = z.object({
+  type: z.enum(["BUG", "FEATURE", "SUGGESTION"]),
+  description: z.string().trim().min(1).max(5000),
+});
+
+export type CreateFeedbackInput = z.infer<typeof createFeedbackSchema>;

@@ -20,47 +20,13 @@ import "dotenv/config";
 import * as fs from "fs";
 import * as path from "path";
 import prisma from "../src/lib/prisma";
+import { resolveRoomId, normalizeCategoryName } from "./taxonomy";
 
 // sort_data.json lives at the repo root (Navimind/sort_data.json).
 const SORT_DATA_PATH =
   process.env.SORT_DATA_PATH || path.resolve(__dirname, "../../sort_data.json");
 
 const BUILDING_CODE = "ADHAM_MALL";
-
-// sort_data category -> store name, for the Electronics sub-clusters that share
-// a single hub store. Every other category maps to a room by its own name.
-const STORE_CLUSTER: Record<string, string> = {
-  Audio: "Smart Devices Hub",
-  Cameras: "Smart Devices Hub",
-  "Computer Peripherals": "Computer Systems Hub",
-  "Laptop & Desktop": "Computer Systems Hub",
-  Mobiles: "Mobile & Tablets Hub",
-  Tabelts: "Mobile & Tablets Hub",
-};
-
-// room id -> store name (matches seed-pois.ts ROOM_INFO / Poi.name & Poi.code).
-const ROOM_INFO: Record<number, string> = {
-  350: "Smart Devices Hub", 351: "Computer Systems Hub", 352: "Mobile & Tablets Hub",
-  353: "Storage", 354: "Smart Home Automation", 355: "Smart Wearables", 356: "Gaming",
-  357: "Laptop Accessories", 358: "Health & Personal Care",
-  450: "Bedroom", 451: "Living Room", 452: "Study/Office", 453: "Kitchen",
-  454: "Dining Room", 455: "Bathroom", 456: "Furnishings", 457: "Kitchen and Dining",
-  458: "Home Decor", 459: "Tools and Utility", 460: "Lighting and Electricals",
-  461: "Cleaning and Bath", 462: "Pet and Gardening",
-};
-
-// name (lowercased) -> room id. Tolerates minor spelling drift between
-// sort_data ("Tools and utility") and ROOM_INFO ("Tools and Utility").
-const NAME_TO_ROOM: Record<string, number> = {};
-for (const [id, name] of Object.entries(ROOM_INFO)) {
-  NAME_TO_ROOM[name.toLowerCase()] = Number(id);
-}
-
-function resolveRoomId(category: string): number | null {
-  const storeName = STORE_CLUSTER[category] || category;
-  const id = NAME_TO_ROOM[storeName.toLowerCase()];
-  return id ?? null;
-}
 
 // "₹7,989" / "1,200 EGP" -> 7989 / 1200. Non-digits stripped (matches the
 // original clean_price).
@@ -106,6 +72,12 @@ async function main() {
     if (p.code) roomToPoiId[Number(p.code)] = p.id;
   }
 
+  // Map (normalized) category name -> PoiCategory id, so products link into the
+  // shared interest taxonomy. Run seed-taxonomy.ts first to create these rows.
+  const cats = await prisma.poiCategory.findMany({ select: { id: true, name: true } });
+  const catNameToId: Record<string, string> = {};
+  for (const c of cats) catNameToId[c.name] = c.id;
+
   // Flatten sort_data -> Product rows.
   const rows: {
     name: string;
@@ -116,16 +88,21 @@ async function main() {
     category: string;
     subCategory: string | null;
     poiId: string | null;
+    categoryId: string | null;
     buildingId: string;
   }[] = [];
 
   const unmapped = new Set<string>();
+  const noCategoryRow = new Set<string>();
   for (const typeBlock of raw) {
     for (const cat of typeBlock.items ?? []) {
-      const category = cat.category as string;
-      const roomId = resolveRoomId(category);
+      const rawCategory = cat.category as string;
+      const category = normalizeCategoryName(rawCategory);
+      const roomId = resolveRoomId(rawCategory);
       const poiId = roomId != null ? roomToPoiId[roomId] ?? null : null;
-      if (poiId == null) unmapped.add(category);
+      if (poiId == null) unmapped.add(rawCategory);
+      const categoryId = catNameToId[category] ?? null;
+      if (categoryId == null) noCategoryRow.add(category);
       for (const sub of cat.items ?? []) {
         const subCategory = sub.subCategory as string | undefined;
         for (const prod of sub.items ?? []) {
@@ -140,6 +117,7 @@ async function main() {
             category,
             subCategory: subCategory ?? null,
             poiId,
+            categoryId,
             buildingId: building.id,
           });
         }
@@ -170,6 +148,11 @@ async function main() {
   if (unmapped.size) {
     console.warn(
       `Categories with no matching Poi (products kept, poiId=null): ${[...unmapped].join(", ")}`,
+    );
+  }
+  if (noCategoryRow.size) {
+    console.warn(
+      `Categories with no PoiCategory row (categoryId=null; run seed-taxonomy.ts first): ${[...noCategoryRow].join(", ")}`,
     );
   }
 }

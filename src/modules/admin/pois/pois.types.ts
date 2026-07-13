@@ -15,9 +15,8 @@ export interface CreatePoiInput {
   areaW?: number | null;
   areaH?: number | null;
   description?: string;
-  categoryId?: string;
-  /** Free-text category name — resolved via connectOrCreate. */
-  category?: string;
+  /** Taxonomy node ids (categories AND sub-categories) linked to this POI. */
+  categoryIds?: string[];
   aliases?: string[];
   productKeywords?: string[];
   images?: string[];
@@ -38,9 +37,8 @@ export interface UpdatePoiInput {
   areaW?: number | null;
   areaH?: number | null;
   description?: string;
-  categoryId?: string;
-  /** Free-text category name; empty string disconnects the category. */
-  category?: string;
+  /** Taxonomy node ids to set (replaces the POI's whole membership). */
+  categoryIds?: string[];
   aliases?: string[];
   productKeywords?: string[];
   images?: string[];

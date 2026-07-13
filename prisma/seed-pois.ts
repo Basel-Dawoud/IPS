@@ -18,14 +18,9 @@
 import "dotenv/config";
 import prisma from "../src/lib/prisma";
 import { PoiType } from "../src/generated/prisma/enums";
+import { keywordsForRoom } from "./taxonomy";
 
 const CELL_SIZE = 0.2; // meters per grid cell
-
-// floorLevel -> the section/category we group its stores under (chatbot facet)
-const FLOOR_CATEGORY: Record<number, string> = {
-  3: "Electronics & Tech",
-  4: "Home & Living",
-};
 
 // id -> (row, col) grid centroid (from config.py room_centroids_f3/f4_grid)
 const CENTROIDS: Record<number, [number, number]> = {
@@ -96,48 +91,6 @@ const STORE_ALIASES: Record<number, string[]> = {
   462: ["Pet and Gardening", "pet", "pets", "gardening", "garden", "plants", "حيوانات", "حديقة", "زرع"],
 };
 
-// product keyword -> room id (from config.py PRODUCT_TO_ROOM); inverted below.
-const PRODUCT_TO_ROOM: Record<string, number> = {
-  camera: 350, cameras: 350, headphones: 350, earbuds: 350, speaker: 350, "smart device": 350, iot: 350, "smart sensor": 350,
-  "كاميرا": 350, "كاميرات": 350, "سماعات": 350, "سماعة": 350, "جهاز ذكي": 350, "انترنت الاشياء": 350,
-  computer: 351, desktop: 351, pc: 351, server: 351, motherboard: 351, cpu: 351, processor: 351, gpu: 351, ram: 351, "computer system": 351,
-  "كمبيوتر": 351, "حاسب": 351, "معالج": 351, "رام": 351, "كارت شاشة": 351,
-  mobile: 352, phone: 352, smartphone: 352, tablet: 352, ipad: 352, iphone: 352, samsung: 352, charger: 352, "power bank": 352,
-  "موبايل": 352, "هاتف": 352, "تليفون": 352, "تابلت": 352, "ايفون": 352, "سامسونج": 352, "شاحن": 352,
-  "hard drive": 353, ssd: 353, hdd: 353, usb: 353, flash: 353, memory: 353, storage: 353, "sd card": 353, "external drive": 353,
-  "هارد": 353, "فلاشه": 353, "ذاكرة": 353, "تخزين": 353, "كارت ميموري": 353, "رامات": 353, "راما": 353, "hard disk": 353, "pen drive": 353,
-  "ليدر": 353, "ريدر": 353, reader: 353, "mobile memory card": 353,
-  "smart home": 354, automation: 354, "smart lock": 354, "smart light": 354, "security camera": 354, "smart switch": 354,
-  "بيت ذكي": 354, "قفل ذكي": 354, "كاميرا مراقبة": 354, "اضاءة ذكية": 354,
-  "smart watch": 355, smartwatch: 355, wearable: 355, "fitness tracker": 355, vr: 355, "ar glasses": 355,
-  "ساعة ذكية": 355, "ويرابل": 355, "نظارة ذكية": 355,
-  gaming: 356, game: 356, playstation: 356, xbox: 356, console: 356, controller: 356, "gaming chair": 356, "gaming mouse": 356,
-  "جيمينج": 356, "بلايستيشن": 356, "اكس بوكس": 356, "كونسول": 356, "كرسي جيمينج": 356,
-  laptop: 357, mouse: 357, keyboard: 357, "laptop stand": 357, dock: 357, webcam: 357, "cooling pad": 357,
-  "لابتوب": 357, "كيبورد": 357, "ماوس": 357, "ويب كام": 357,
-  health: 358, "personal care": 358, skincare: 358, "hair dryer": 358, massager: 358, "electric toothbrush": 358,
-  "صحة": 358, "عناية شخصية": 358, "مجفف شعر": 358, "فرشاة اسنان": 358,
-  bed: 450, mattress: 450, pillow: 450, wardrobe: 450, bedroom: 450, "سرير": 450, "مرتبة": 450, "مخدة": 450, "دولاب": 450,
-  sofa: 451, couch: 451, tv: 451, television: 451, "coffee table": 451, "living room": 451, "كنبة": 451, "صالون": 451, "تلفزيون": 451, "ركنة": 451,
-  desk: 452, "office chair": 452, bookshelf: 452, study: 452, office: 452, printer: 452, "مكتب": 452, "كرسي مكتب": 452, "مكتبة": 452, "طابعة": 452,
-  kitchen: 453, fridge: 453, refrigerator: 453, oven: 453, microwave: 453, "air fryer": 453, blender: 453, "مطبخ": 453, "ثلاجة": 453, "بوتاجاز": 453, "ميكروويف": 453,
-  dining: 454, "dining table": 454, "dining chair": 454, buffet: 454, "سفرة": 454, "ترابيزة سفرة": 454, "غرفة سفرة": 454,
-  bathroom: 455, toilet: 455, shower: 455, sink: 455, towel: 455, "حمام": 455, "دوش": 455, "مغسلة": 455,
-  curtain: 456, carpet: 456, rug: 456, bedsheet: 456, blanket: 456, "ستاير": 456, "سجاد": 456, "مفروشات": 456,
-  plate: 457, cup: 457, cutlery: 457, cookware: 457, pot: 457, "طبق": 457, "كوب": 457, "حلل": 457,
-  decor: 458, vase: 458, mirror: 458, painting: 458, clock: 458, "ديكور": 458, "تحف": 458, "مراية": 458,
-  tool: 459, drill: 459, hammer: 459, screwdriver: 459, toolbox: 459, "عدة": 459, "شنيور": 459, "مفك": 459,
-  light: 460, lamp: 460, chandelier: 460, bulb: 460, led: 460, "لمبة": 460, "نجف": 460, "اضاءة": 460,
-  cleaning: 461, vacuum: 461, detergent: 461, mop: 461, broom: 461, "تنظيف": 461, "مكنسة": 461, "ممسحة": 461,
-  pet: 462, dog: 462, cat: 462, plant: 462, garden: 462, flower: 462, "حيوان": 462, "كلب": 462, "قطة": 462, "زرع": 462,
-};
-
-function keywordsForRoom(id: number): string[] {
-  return Object.entries(PRODUCT_TO_ROOM)
-    .filter(([, roomId]) => roomId === id)
-    .map(([keyword]) => keyword);
-}
-
 function floorOf(id: number): number {
   return id < 400 ? 3 : 4;
 }
@@ -164,16 +117,8 @@ async function main() {
     });
   }
 
-  // Create/upsert categories
-  const categories: Record<string, string> = {};
-  for (const name of Object.values(FLOOR_CATEGORY)) {
-    const cat = await prisma.poiCategory.upsert({
-      where: { name },
-      update: {},
-      create: { name },
-    });
-    categories[name] = cat.id;
-  }
+  // Categories/sub-categories and their POI links are owned by seed-taxonomy.ts
+  // (run it after this). Here we only create POIs + their productKeywords.
 
   // Idempotent: clear this building's POIs before re-importing. Safe while no
   // MapNode references them (no map/routing data seeded yet).
@@ -183,8 +128,6 @@ async function main() {
   let created = 0;
   for (const id of ids) {
     const [row, col] = CENTROIDS[id];
-    const categoryName = FLOOR_CATEGORY[floorOf(id)];
-    const categoryId = categoryName ? categories[categoryName] : null;
 
     await prisma.poi.create({
       data: {
@@ -196,7 +139,6 @@ async function main() {
         x: col * CELL_SIZE,
         y: row * CELL_SIZE,
         description: STORE_DESCRIPTIONS[id] ?? null,
-        categoryId: categoryId,
         aliases: STORE_ALIASES[id] ?? [],
         productKeywords: keywordsForRoom(id),
       },

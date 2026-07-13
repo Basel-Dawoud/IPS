@@ -26,6 +26,9 @@ router.get("/recent-visits", requireAuth, userController.getRecentVisits);
 // Clear the signed-in user's visit history (requires auth)
 router.delete("/recent-visits", requireAuth, userController.clearRecentVisits);
 
+// Submit user feedback (requires auth)
+router.post("/feedback", requireAuth, userController.createFeedback);
+
 // Delete the signed-in user's account (requires auth)
 router.delete("/", requireAuth, userController.deleteAccount);
 

@@ -20,7 +20,7 @@ export async function processMessage(input: ChatMessageInput, userId?: string): 
   console.log(`[chat.service] Incoming message to process: "${input.message}" (lang=${lang}, userId=${userId || 'guest'})`);
 
   try {
-    const serviceReply = await callChatbotService(input, lang);
+    const serviceReply = await callChatbotService(input, lang, userId);
     if (serviceReply) {
       console.log(`[chat.service] Successfully received reply from chatbot-service:`, JSON.stringify(serviceReply, null, 2));
       // The brain classified this turn as a recommendation request — answer it
