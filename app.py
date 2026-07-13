@@ -91,15 +91,30 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
 def chat(req: ChatRequest):
+    logger.info("========== /chat REQUEST ==========")
+    logger.info(f"  message:          {req.message!r}")
+    logger.info(f"  buildingId:       {req.buildingId}")
+    logger.info(f"  version:          {req.version}")
+    logger.info(f"  lang:             {req.lang}")
+    logger.info(f"  pendingPoiId:     {req.pendingPoiId}")
+    logger.info(f"  productsVersion:  {req.productsVersion}")
+    logger.info(f"  interests:        {req.interests}")
+    logger.info(f"  pois sent:        {len(req.pois) if req.pois else 'None'}")
+
     catalog = get_catalog_by_version(req.buildingId, req.version)
     if catalog is None:
+        logger.info("  [CATALOG] CACHE MISS — need to build from POI list")
         if req.pois is None:
+            logger.error("  [CATALOG] No POIs provided! Returning 409")
             raise HTTPException(
                 status_code=409,
                 detail="POI catalog cache miss. Full POI list required."
             )
         pois = [p.model_dump() for p in req.pois]
         catalog = build_and_cache_catalog(req.buildingId, req.version, pois)
+        logger.info(f"  [CATALOG] Built new catalog with {len(catalog.pois)} active POIs")
+    else:
+        logger.info(f"  [CATALOG] CACHE HIT — {len(catalog.pois)} POIs in cache")
 
     result = respond(
         message=req.message,
@@ -110,4 +125,6 @@ def chat(req: ChatRequest):
         products_version=req.productsVersion,
         interests=req.interests,
     )
+    logger.info(f"  [RESULT] {result}")
+    logger.info("========== /chat DONE ==========")
     return ChatResponse(**result)

@@ -9,7 +9,10 @@ LLM/RAG helpers, adapted so that:
 """
 from __future__ import annotations
 
+import logging
 import random
+
+logger = logging.getLogger("chatbot_service.brain")
 
 import llm
 import products
@@ -105,6 +108,7 @@ Reply ONLY with: {{"match": true}} or {{"match": false}}
 # --- LLM understanding -----------------------------------------------------
 
 def llm_understand(user_text: str, lang: str, pending: bool) -> dict:
+    logger.info(f"  [LLM_UNDERSTAND] text={user_text!r}  lang={lang}  pending={pending}")
     lang_note = ("The user's message is ENGLISH; the \"reply\" must be entirely in professional English.\n"
                  if lang == "en" else
                  "The user's message is ARABIC; the \"reply\" must be entirely in professional Arabic/Egyptian.\n")
@@ -116,7 +120,9 @@ def llm_understand(user_text: str, lang: str, pending: bool) -> dict:
                    "unless it is itself a standalone confirmation word (yes/no/ايوه/لأ/تمام/ماشي) with no other content.\n")
     user = context + lang_note + f"User message: {user_text}"
     data = llm.chat_json(SYSTEM_PROMPT, user)
-    return _sanitize(data, user_text)
+    result = _sanitize(data, user_text)
+    logger.info(f"  [LLM_UNDERSTAND] result: {result}")
+    return result
 
 
 def _sanitize(data: dict | None, user_text: str) -> dict:
@@ -163,30 +169,40 @@ def mall_info(user_text: str, catalog: BuildingCatalog, lang: str) -> str:
 def resolve_poi(catalog: BuildingCatalog, search_query: str | None, raw_text: str):
     """Return (poi, confidence) or (None, 0). Deterministic alias fast-path
     first, then RAG + LLM verify."""
+    logger.info(f"  [RESOLVE_POI] search_query={search_query!r}  raw_text={raw_text!r}")
     direct = None
     if search_query:
         direct = catalog.alias_direct_match(search_query)
+        logger.info(f"  [RESOLVE_POI] alias_direct_match(search_query) -> {direct.get('name') if direct else None}")
     if not direct:
         direct = catalog.alias_direct_match(raw_text)
+        logger.info(f"  [RESOLVE_POI] alias_direct_match(raw_text) -> {direct.get('name') if direct else None}")
     if direct:
+        logger.info(f"  [RESOLVE_POI] DIRECT HIT -> {direct.get('name')} (id={direct.get('id')})")
         return direct, 1.0
 
     query = search_query or raw_text
+    logger.info(f"  [RESOLVE_POI] No direct match, running RAG search for: {query!r}")
     hits = catalog.search(query, top_k=3, min_score=BORDERLINE_MATCH_THRESHOLD)
+    logger.info(f"  [RESOLVE_POI] RAG hits: {[(h[0].get('name'), round(h[1],3)) for h in hits]}")
     if not hits:
+        logger.info("  [RESOLVE_POI] No RAG hits above threshold -> returning None")
         return None, 0.0
     poi, score = hits[0]
     examples = (poi.get("productKeywords") or []) + (poi.get("aliases") or [])
+    logger.info(f"  [RESOLVE_POI] Top hit: {poi.get('name')} score={score:.3f}  examples={examples[:6]}")
     verified = llm_verify_match(query, poi, examples)
+    logger.info(f"  [RESOLVE_POI] LLM verify result: {verified}")
     if verified is False:
+        logger.info("  [RESOLVE_POI] LLM said NO match -> returning None")
         return None, 0.0
     if score < CONFIDENT_MATCH_THRESHOLD and verified is not True:
-        # Borderline embedding score: only an explicit verifier "yes" may
-        # rescue it (handles vague phrasing like "something to fry eggs in"
-        # without letting coincidental similarity through).
+        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < CONFIDENT ({CONFIDENT_MATCH_THRESHOLD}) and verifier not True -> returning None")
         return None, 0.0
     if verified is None and score < STRONG_MATCH_THRESHOLD:
+        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < STRONG ({STRONG_MATCH_THRESHOLD}) and verifier inconclusive -> returning None")
         return None, 0.0
+    logger.info(f"  [RESOLVE_POI] ACCEPTED -> {poi.get('name')} (id={poi.get('id')}) score={score:.3f}")
     return poi, score
 
 
@@ -282,6 +298,7 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
     echoes its poiId back as `pending_poi_id` on the next turn."""
     lang = lang or detect_language(message)
     awaiting = bool(pending_poi_id and catalog.by_id.get(pending_poi_id))
+    logger.info(f"  [RESPOND] message={message!r}  lang={lang}  awaiting={awaiting}  catalog_pois={len(catalog.pois)}")
 
     def out(reply, action=None, handoff=None, clear_pending=False):
         r = {"reply": reply, "lang": lang}
@@ -298,36 +315,48 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
     #    with certainty here and only let novel phrasing reach the LLM).
     direct_poi = catalog.alias_direct_match(message)
     confirmation = detect_yes_no(message)
+    logger.info(f"  [PRE-ROUTE] direct_poi={direct_poi.get('name') if direct_poi else None}  confirmation={confirmation}")
 
     if awaiting and confirmation and not direct_poi:
         intent = "navigate_confirm_yes" if confirmation == "yes" else "navigate_confirm_no"
         understanding = {"intent": intent, "search_query": None, "reply": ""}
+        logger.info(f"  [PRE-ROUTE] -> confirmation path: {intent}")
     elif looks_like_recommend_query(message):
-        # Checked before the direct-POI fast-path: "recommend a good phone"
-        # names a product ("phone"), but the recommend cue means the user wants
-        # product suggestions, not to be routed straight to the store.
         understanding = {"intent": "recommend", "search_query": None, "reply": ""}
+        logger.info("  [PRE-ROUTE] -> recommend path")
     elif direct_poi:
         understanding = {
             "intent": "list_query" if looks_like_list_query(message) else "product_query",
             "search_query": message, "reply": "",
         }
+        logger.info(f"  [PRE-ROUTE] -> direct POI match: {direct_poi.get('name')}  intent={understanding['intent']}")
     else:
+        logger.info("  [PRE-ROUTE] -> no deterministic match, calling LLM...")
         understanding = llm_understand(message, lang, pending=awaiting)
 
     intent = understanding.get("intent")
     llm_reply = understanding.get("reply") or ""
+    logger.info(f"  [INTENT] raw intent={intent}  search_query={understanding.get('search_query')!r}  llm_reply={llm_reply!r}")
 
     # Hard guard: never act on a confirmation unless we're actually awaiting one.
     if intent in ("navigate_confirm_yes", "navigate_confirm_no") and not awaiting:
+        old = intent
         intent = "product_query" if understanding.get("search_query") else "chitchat"
+        logger.info(f"  [INTENT] guard: {old} -> {intent} (not awaiting)")
 
-    # Guard against the "no + new request" trap: if the LLM labels a message a
-    # rejection but the message actually carries a new request (it produced a
-    # search_query, or the message is clearly more than a bare "no"), treat it
-    # as that request instead of swallowing it with "okay, anything else?".
+    # Guard against the "no + new request" trap
     if intent == "navigate_confirm_no" and understanding.get("search_query"):
         intent = "product_query"
+        logger.info("  [INTENT] guard: navigate_confirm_no with search_query -> product_query")
+
+    # Guard: the 3B LLM confuses "what types of X" (list_query) with
+    # "recommend me something" (recommend). If the message contains clear
+    # list-query hints (e.g. "انواع" = types, "ماركات" = brands), override.
+    if intent == "recommend" and looks_like_list_query(message):
+        intent = "list_query"
+        if not understanding.get("search_query"):
+            understanding["search_query"] = message
+        logger.info(f"  [INTENT] guard: recommend -> list_query (list hints detected)")
 
     # 2. Confirmation handling
     if intent == "navigate_confirm_yes":
@@ -362,42 +391,84 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
             return out(reply, action)
         return out("", handoff="recommend")
 
-    # 3. List query -> list stores in the matched category, offer to navigate.
+    # 3. List query -> list product types/brands in the matched store, offer to navigate.
+    #    Ported from original: list_subcategories_for_query always returned real
+    #    product subcategories, not just sibling POI names.
     if intent == "list_query":
+        logger.info(f"  [BRANCH] list_query -> resolving POI...")
         poi, _ = resolve_poi(catalog, understanding.get("search_query"), message)
         if poi:
+            logger.info(f"  [BRANCH] list_query -> FOUND: {poi.get('name')} (id={poi.get('id')})")
+            cat = _poi_category(poi)
+            # Fetch real products from backend to list subcategories/brands
+            # (like the original's rag_search_product + _sibling_subcategories)
+            prod_catalog = products.get_catalog(building_id, products_version)
+            if prod_catalog and poi.get("id"):
+                poi_products = prod_catalog.by_poi.get(poi["id"], [])
+                # Extract unique subcategories/brands as the "types" list
+                subcats = sorted({p.get("subCategory") or p.get("brand") or p.get("name", "")
+                                  for p in poi_products if p.get("subCategory") or p.get("brand") or p.get("name")})
+                logger.info(f"  [BRANCH] list_query -> found {len(poi_products)} products, {len(subcats)} subcategories")
+                if subcats:
+                    names = "، ".join(subcats) if lang == "ar" else ", ".join(subcats)
+                    if lang == "ar":
+                        reply = (f"في قسم {cat} ({_place_phrase(poi, lang)}) عندنا الأنواع دي:\n\n"
+                                 f"📍 {names}\n\nتحب أوصّلك هناك؟")
+                    else:
+                        reply = (f"In {cat} ({_place_phrase(poi, lang)}) we have these types:\n\n"
+                                 f"📍 {names}\n\nWant me to guide you there?")
+                    return out(reply, {"type": "suggest", "poiId": poi["id"], "floorLevel": _floor(poi)})
+            # Fallback: no products data, list sibling POIs
             siblings = catalog.category_siblings(poi) or [poi]
             names = "، ".join(p.get("name", "") for p in siblings) if lang == "ar" \
                 else ", ".join(p.get("name", "") for p in siblings)
-            cat = _poi_category(poi)
             if lang == "ar":
                 reply = f"في قسم {cat} عندنا: {names}. تحب أوصّلك لـ {_place_phrase(poi, lang)}؟"
             else:
                 reply = f"In {cat} we have: {names}. Want me to guide you to {_place_phrase(poi, lang)}?"
             return out(reply, {"type": "suggest", "poiId": poi["id"], "floorLevel": _floor(poi)})
+        logger.info("  [BRANCH] list_query -> NOT FOUND")
         return out(_NOT_FOUND[lang])
 
     # 4. Product query -> resolve to a store, offer to navigate.
+    #    Enhanced: also fetch sample products (like original's resolve_product_query
+    #    which always called rag_search_product even on direct alias hits).
     if intent == "product_query":
+        logger.info(f"  [BRANCH] product_query -> resolving POI...")
         poi, _ = resolve_poi(catalog, understanding.get("search_query"), message)
         if poi:
-            return out(_suggest_reply(poi, lang),
+            logger.info(f"  [BRANCH] product_query -> FOUND: {poi.get('name')} (id={poi.get('id')})")
+            # Fetch sample products to enrich the reply
+            prod_catalog = products.get_catalog(building_id, products_version)
+            sample_text = ""
+            if prod_catalog and poi.get("id"):
+                query = understanding.get("search_query") or message
+                samples = prod_catalog.top_for_poi(poi["id"], n=3, query=query)
+                logger.info(f"  [BRANCH] product_query -> fetched {len(samples)} sample products")
+                if samples:
+                    sample_names = [f"{p.get('brand', '')} {p.get('name', '')}".strip() for p in samples]
+                    if lang == "ar":
+                        sample_text = "\n\nمن المنتجات المتوفرة: " + "، ".join(sample_names)
+                    else:
+                        sample_text = "\n\nSome available products: " + ", ".join(sample_names)
+            reply = _suggest_reply(poi, lang) + sample_text
+            return out(reply,
                        {"type": "suggest", "poiId": poi["id"], "floorLevel": _floor(poi)})
+        logger.info("  [BRANCH] product_query -> NOT FOUND")
         return out(_NOT_FOUND[lang])
 
     # 5. Mall info
     if intent == "mall_info":
+        logger.info("  [BRANCH] mall_info")
         return out(mall_info(message, catalog, lang))
 
     # 6. Out of scope
     if intent == "out_of_scope":
+        logger.info("  [BRANCH] out_of_scope")
         return out(random.choice(_OUT_OF_SCOPE[lang]))
 
     # 7. Chitchat (use the LLM's reply if it gave one).
-    # Echo guard: small models sometimes put the user's own message in the
-    # "reply" field (e.g. user says "Yepppp", model replies "Yepppp"). A reply
-    # that is essentially the user's message is worse than a canned line, so
-    # discard it.
+    logger.info(f"  [BRANCH] chitchat (fallback) llm_reply={llm_reply!r}")
     if llm_reply and _is_echo(llm_reply, message):
         llm_reply = ""
     return out(llm_reply or random.choice(_CHITCHAT[lang]))

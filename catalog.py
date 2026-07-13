@@ -13,8 +13,10 @@ emit a Navimind navigation action without any room-number mapping.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
+import re
 import threading
 
 # Force transformers to ignore any globally-installed TensorFlow/Keras (this
@@ -114,7 +116,13 @@ class BuildingCatalog:
         self._emb_lock = threading.Lock()
 
     # -- deterministic fast-path ------------------------------------------------
-    def alias_direct_match(self, text: str) -> dict | None:
+    def alias_direct_match(self, text: str, strict: bool = False) -> dict | None:
+        """Match text against known POI names/aliases.
+
+        When strict=True (used by pre-routing), only exact phrase and alias
+        matches are considered — keyword-token scoring is skipped so that
+        partial/fuzzy hits don't bypass the LLM intent classifier.
+        """
         if not text:
             return None
         low = norm(text)
@@ -126,6 +134,9 @@ class BuildingCatalog:
         for phrase, pid in self.full_names:
             if phrase in low_en:
                 return self.by_id.get(pid)
+
+        if strict:
+            return None
 
         scores: dict[str, float] = {}
         for tok in tokenize(text):
