@@ -1,12 +1,13 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Building2, Radio, Fingerprint, LogOut, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, Building2, Radio, Fingerprint, LogOut, ShieldCheck, Tags } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/features/auth/AuthContext";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Buildings", href: "/buildings", icon: Building2 },
+  { label: "Categories", href: "/categories", icon: Tags },
   { label: "Beacons", href: "/beacons", icon: Radio },
   { label: "Fingerprinting", href: "/fingerprinting", icon: Fingerprint },
 ];

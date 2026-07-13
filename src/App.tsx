@@ -17,6 +17,7 @@ import { SessionListPage } from "@/features/fingerprinting/SessionListPage";
 import { SessionDetailPage } from "@/features/fingerprinting/SessionDetailPage";
 import { PoiDetailPage } from "@/features/pois/PoiDetailPage";
 import { LiveMapPage } from "@/features/live/LiveMapPage";
+import { CategoriesPage } from "@/features/categories/CategoriesPage";
 import { AnalyticsPage } from "@/features/live/AnalyticsPage";
 
 function App() {
@@ -46,6 +47,7 @@ function App() {
                   element={<AnalyticsPage />}
                 />
                 <Route path="/beacons" element={<BeaconListPage />} />
+                <Route path="/categories" element={<CategoriesPage />} />
                 <Route path="/pois" element={<Navigate to="/buildings" replace />} />
                 <Route path="/fingerprinting" element={<SessionListPage />} />
                 <Route path="/fingerprinting/:sessionId" element={<SessionDetailPage />} />

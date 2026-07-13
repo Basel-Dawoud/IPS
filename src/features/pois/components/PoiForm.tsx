@@ -24,8 +24,8 @@ import type { Floor } from "@/features/floors/types";
 import { POI_TYPES } from "../types";
 import type { CreatePoiInput, Poi, PoiType } from "../types";
 import { computeAutoZone, type PoiZone } from "../poi-zone";
-import CreatableSelect from "react-select/creatable";
-import { usePoiCategories } from "@/features/pois/hooks";
+import ReactSelect from "react-select";
+import { useCategoryTree } from "@/features/categories/hooks";
 
 interface PoiFormProps {
   open: boolean;
@@ -48,6 +48,33 @@ const fromCsv = (s: string) =>
     .map((t) => t.trim())
     .filter(Boolean);
 
+// Shared react-select theming so the multi-selects match the shadcn inputs.
+const reactSelectStyles = {
+  control: (base: any) => ({
+    ...base,
+    backgroundColor: "transparent",
+    borderColor: "var(--color-border)",
+    borderRadius: "0.5rem",
+    fontSize: "0.875rem",
+    minHeight: "2.25rem",
+  }),
+  menu: (base: any) => ({
+    ...base,
+    backgroundColor: "var(--color-popover)",
+    color: "var(--color-popover-foreground)",
+    zIndex: 50,
+  }),
+  option: (base: any, state: any) => ({
+    ...base,
+    backgroundColor: state.isFocused ? "rgba(0,0,0,0.06)" : "transparent",
+    color: "inherit",
+    cursor: "pointer",
+  }),
+  multiValue: (base: any) => ({ ...base, backgroundColor: "var(--color-muted)" }),
+  multiValueLabel: (base: any) => ({ ...base, color: "inherit" }),
+  input: (base: any) => ({ ...base, color: "inherit" }),
+};
+
 export function PoiForm({
   open,
   onOpenChange,
@@ -61,16 +88,37 @@ export function PoiForm({
 }: PoiFormProps) {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const { data: categories, isLoading: categoriesLoading } = usePoiCategories();
+  const { data: categoryTree, isLoading: categoriesLoading } = useCategoryTree();
 
-  const categoryOptions = useMemo(() => {
-    return (categories ?? []).map((c) => ({
-      value: c.name,
-      label: c.name,
-    }));
-  }, [categories]);
+  // Selected taxonomy ids, split by level.
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
+  const [selectedSubIds, setSelectedSubIds] = useState<string[]>([]);
+
+  // Options: parent categories, and sub-categories filtered to the chosen parents.
+  const categoryOptions = useMemo(
+    () => (categoryTree ?? []).map((c) => ({ value: c.id, label: c.name })),
+    [categoryTree],
+  );
+  const subOptions = useMemo(() => {
+    const chosen = new Set(selectedCategoryIds);
+    return (categoryTree ?? [])
+      .filter((c) => chosen.has(c.id))
+      .flatMap((c) =>
+        c.children.map((s) => ({ value: s.id, label: s.name, keywords: s.keywords })),
+      );
+  }, [categoryTree, selectedCategoryIds]);
+
+  // Suggested keywords = union across the selected sub-categories.
+  const suggestedKeywords = useMemo(() => {
+    const chosen = new Set(selectedSubIds);
+    const set = new Set<string>();
+    for (const c of categoryTree ?? [])
+      for (const s of c.children)
+        if (chosen.has(s.id)) for (const k of s.keywords) set.add(k);
+    return [...set];
+  }, [categoryTree, selectedSubIds]);
+
   const [type, setType] = useState<PoiType>("ROOM");
-  const [category, setCategory] = useState("");
   const [description, setDescription] = useState("");
   const [aliases, setAliases] = useState("");
   const [productKeywords, setProductKeywords] = useState("");
@@ -124,7 +172,11 @@ export function PoiForm({
       setName(poi.name);
       setCode(poi.code ?? "");
       setType(poi.type);
-      setCategory(poi.category ?? "");
+      {
+        const cats = poi.categories ?? [];
+        setSelectedCategoryIds(cats.filter((c) => c.parentId === null).map((c) => c.id));
+        setSelectedSubIds(cats.filter((c) => c.parentId !== null).map((c) => c.id));
+      }
       setDescription(poi.description ?? "");
       setAliases(toCsv(poi.aliases ?? []));
       setProductKeywords(toCsv(poi.productKeywords ?? []));
@@ -145,7 +197,8 @@ export function PoiForm({
       setName("");
       setCode("");
       setType("ROOM");
-      setCategory("");
+      setSelectedCategoryIds([]);
+      setSelectedSubIds([]);
       setDescription("");
       setAliases("");
       setProductKeywords("");
@@ -247,7 +300,7 @@ export function PoiForm({
         areaY: zone?.y ?? null,
         areaW: zone?.w ?? null,
         areaH: zone?.h ?? null,
-        category: category || undefined,
+        categoryIds: [...selectedCategoryIds, ...selectedSubIds],
         description: description || undefined,
         aliases: fromCsv(aliases),
         productKeywords: fromCsv(productKeywords),
@@ -312,41 +365,45 @@ export function PoiForm({
                 </div>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="poi-category">Category</Label>
-                <CreatableSelect
-                  className="basic-single"
+                <Label>Categories</Label>
+                <ReactSelect
+                  isMulti
                   classNamePrefix="select"
-                  isClearable
                   isLoading={categoriesLoading}
-                  value={category ? { value: category, label: category } : null}
-                  onChange={(newValue) => setCategory(newValue ? newValue.value : "")}
                   options={categoryOptions}
-                  placeholder="Select or type to create category..."
-                  styles={{
-                    control: (base) => ({
-                      ...base,
-                      backgroundColor: "transparent",
-                      borderColor: "oklch(0.922 0 0)", // fallback border style
-                      borderRadius: "0.5rem",
-                      fontSize: "0.875rem",
-                    }),
-                    menu: (base) => ({
-                      ...base,
-                      backgroundColor: "var(--color-popover)",
-                      borderColor: "var(--color-border)",
-                      color: "var(--color-popover-foreground)",
-                    }),
-                    option: (base, state) => ({
-                      ...base,
-                      backgroundColor: state.isFocused ? "rgba(0,0,0,0.05)" : "transparent",
-                      color: "inherit",
-                      cursor: "pointer",
-                    }),
-                    singleValue: (base) => ({
-                      ...base,
-                      color: "inherit",
-                    }),
+                  value={categoryOptions.filter((o) => selectedCategoryIds.includes(o.value))}
+                  onChange={(vals) => {
+                    const ids = (vals as unknown as { value: string }[]).map((v) => v.value);
+                    setSelectedCategoryIds(ids);
+                    // Drop sub-categories whose parent is no longer selected.
+                    const validSubs = new Set(
+                      (categoryTree ?? [])
+                        .filter((c) => ids.includes(c.id))
+                        .flatMap((c) => c.children.map((s) => s.id)),
+                    );
+                    setSelectedSubIds((prev) => prev.filter((id) => validSubs.has(id)));
                   }}
+                  placeholder="Select categories..."
+                  styles={reactSelectStyles}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Sub-categories</Label>
+                <ReactSelect
+                  isMulti
+                  classNamePrefix="select"
+                  options={subOptions}
+                  value={subOptions.filter((o) => selectedSubIds.includes(o.value))}
+                  onChange={(vals) =>
+                    setSelectedSubIds((vals as unknown as { value: string }[]).map((v) => v.value))
+                  }
+                  isDisabled={selectedCategoryIds.length === 0}
+                  placeholder={
+                    selectedCategoryIds.length === 0
+                      ? "Pick a category first"
+                      : "Select sub-categories..."
+                  }
+                  styles={reactSelectStyles}
                 />
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -640,6 +697,53 @@ export function PoiForm({
                 onChange={(e) => setProductKeywords(e.target.value)}
                 placeholder="cpu, gpu, ram, motherboard"
               />
+              {suggestedKeywords.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-xs text-muted-foreground mr-1">
+                    Suggested from sub-categories:
+                  </span>
+                  {(() => {
+                    const current = new Set(fromCsv(productKeywords));
+                    const missing = suggestedKeywords.filter((k) => !current.has(k));
+                    return (
+                      <>
+                        {missing.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setProductKeywords(toCsv([...fromCsv(productKeywords), ...missing]))
+                            }
+                            className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/20"
+                          >
+                            + Add all ({missing.length})
+                          </button>
+                        )}
+                        {suggestedKeywords.slice(0, 24).map((k) => {
+                          const added = current.has(k);
+                          return (
+                            <button
+                              key={k}
+                              type="button"
+                              disabled={added}
+                              onClick={() =>
+                                setProductKeywords(toCsv([...fromCsv(productKeywords), k]))
+                              }
+                              className={
+                                "rounded-full border px-2 py-0.5 text-[11px] " +
+                                (added
+                                  ? "border-transparent bg-muted text-muted-foreground line-through"
+                                  : "border-border hover:bg-muted cursor-pointer")
+                              }
+                            >
+                              {k}
+                            </button>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
             
             <div className="flex flex-wrap gap-6 pt-2 border-t mt-2">

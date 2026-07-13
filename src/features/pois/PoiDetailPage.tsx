@@ -6,7 +6,6 @@ import {
   useDeletePoi,
   useUploadPoiIcon,
   usePois,
-  usePoiCategories,
   useCreatePoi,
   useUploadPoiGalleryImage,
   useDeletePoiGalleryImage,
@@ -23,7 +22,8 @@ import {
 import { useReviewsByPoi } from "@/features/reviews/hooks";
 
 import { FloorMapView } from "@/features/floors/components/FloorMapView";
-import CreatableSelect from "react-select/creatable";
+import ReactSelect from "react-select";
+import { useCategoryTree } from "@/features/categories/hooks";
 import { computeAutoZone, type PoiZone } from "./poi-zone";
 import { POI_TYPES, type PoiType } from "./types";
 
@@ -81,6 +81,33 @@ const fromCsv = (s: string) =>
 const toDateInput = (iso: string | null | undefined): string =>
   iso ? new Date(iso).toISOString().slice(0, 10) : "";
 
+// react-select theming to match the shadcn inputs.
+const poiSelectStyles = {
+  control: (base: any) => ({
+    ...base,
+    backgroundColor: "transparent",
+    borderColor: "var(--color-border)",
+    borderRadius: "calc(var(--radius) - 2px)",
+    fontSize: "0.875rem",
+    minHeight: "2.5rem",
+  }),
+  menu: (base: any) => ({
+    ...base,
+    backgroundColor: "var(--color-popover)",
+    color: "var(--color-popover-foreground)",
+    zIndex: 50,
+  }),
+  option: (base: any, state: any) => ({
+    ...base,
+    backgroundColor: state.isFocused ? "rgba(0,0,0,0.06)" : "transparent",
+    color: "inherit",
+    cursor: "pointer",
+  }),
+  multiValue: (base: any) => ({ ...base, backgroundColor: "var(--color-muted)" }),
+  multiValueLabel: (base: any) => ({ ...base, color: "inherit" }),
+  input: (base: any) => ({ ...base, color: "inherit" }),
+};
+
 export function PoiDetailPage() {
   const { buildingId, poiId } = useParams<{ buildingId: string; poiId: string }>();
   const navigate = useNavigate();
@@ -94,7 +121,7 @@ export function PoiDetailPage() {
   const { data: pois } = usePois(buildingId!);
   const { data: deals, isLoading: dealsLoading } = useDealsByPoi(isNew ? "" : poiId!);
   const { data: reviews, isLoading: reviewsLoading } = useReviewsByPoi(isNew ? null : poiId!);
-  const { data: categories, isLoading: categoriesLoading } = usePoiCategories();
+  const { data: categoryTree, isLoading: categoriesLoading } = useCategoryTree();
 
   // Prefer the denormalized aggregate on the POI; fall back to computing from
   // the fetched list so the panel is still meaningful before aggregates exist.
@@ -133,7 +160,8 @@ export function PoiDetailPage() {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [type, setType] = useState<PoiType>("ROOM");
-  const [category, setCategory] = useState("");
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
+  const [selectedSubIds, setSelectedSubIds] = useState<string[]>([]);
   const [description, setDescription] = useState("");
   const [aliases, setAliases] = useState("");
   const [productKeywords, setProductKeywords] = useState("");
@@ -163,13 +191,25 @@ export function PoiDetailPage() {
     return floors.find((f) => f.level === floorLevel) ?? null;
   }, [floors, floorLevel]);
 
-  // Format category choices
-  const categoryOptions = useMemo(() => {
-    return (categories ?? []).map((c) => ({
-      value: c.name,
-      label: c.name,
-    }));
-  }, [categories]);
+  // Parent categories, and sub-categories filtered to the chosen parents.
+  const categoryOptions = useMemo(
+    () => (categoryTree ?? []).map((c) => ({ value: c.id, label: c.name })),
+    [categoryTree],
+  );
+  const subOptions = useMemo(() => {
+    const chosen = new Set(selectedCategoryIds);
+    return (categoryTree ?? [])
+      .filter((c) => chosen.has(c.id))
+      .flatMap((c) => c.children.map((s) => ({ value: s.id, label: s.name })));
+  }, [categoryTree, selectedCategoryIds]);
+  const suggestedKeywords = useMemo(() => {
+    const chosen = new Set(selectedSubIds);
+    const set = new Set<string>();
+    for (const c of categoryTree ?? [])
+      for (const s of c.children)
+        if (chosen.has(s.id)) for (const k of s.keywords) set.add(k);
+    return [...set];
+  }, [categoryTree, selectedSubIds]);
 
   // Sync editor fields when POI is loaded
   useEffect(() => {
@@ -181,7 +221,11 @@ export function PoiDetailPage() {
       setName(poi.name);
       setCode(poi.code ?? "");
       setType(poi.type);
-      setCategory(poi.category ?? "");
+      {
+        const cats = poi.categories ?? [];
+        setSelectedCategoryIds(cats.filter((c) => c.parentId === null).map((c) => c.id));
+        setSelectedSubIds(cats.filter((c) => c.parentId !== null).map((c) => c.id));
+      }
       setDescription(poi.description ?? "");
       setAliases(toCsv(poi.aliases ?? []));
       setProductKeywords(toCsv(poi.productKeywords ?? []));
@@ -204,7 +248,8 @@ export function PoiDetailPage() {
       setName("");
       setCode("");
       setType("ROOM");
-      setCategory("");
+      setSelectedCategoryIds([]);
+      setSelectedSubIds([]);
       setDescription("");
       setAliases("");
       setProductKeywords("");
@@ -293,7 +338,7 @@ export function PoiDetailPage() {
       type,
       x: Number(x),
       y: Number(y),
-      category: category.trim() || undefined,
+      categoryIds: [...selectedCategoryIds, ...selectedSubIds],
       description: description.trim() || undefined,
       aliases: fromCsv(aliases),
       productKeywords: fromCsv(productKeywords),
@@ -633,40 +678,48 @@ export function PoiDetailPage() {
                       </Select>
                     </div>
                     <div className="grid gap-2">
-                      <Label>Category</Label>
-                      <CreatableSelect
-                        className="basic-single"
+                      <Label>Categories</Label>
+                      <ReactSelect
+                        isMulti
                         classNamePrefix="select"
-                        isClearable
                         isLoading={categoriesLoading}
-                        value={category ? { value: category, label: category } : null}
-                        onChange={(newValue) => setCategory(newValue ? newValue.value : "")}
                         options={categoryOptions}
-                        placeholder="Select or type category..."
-                        styles={{
-                          control: (base) => ({
-                            ...base,
-                            backgroundColor: "transparent",
-                            borderColor: "oklch(0.922 0 0)",
-                            borderRadius: "calc(var(--radius) - 2px)",
-                            fontSize: "0.875rem",
-                            height: "2.5rem",
-                          }),
-                          menu: (base) => ({
-                            ...base,
-                            backgroundColor: "var(--color-popover)",
-                            borderColor: "var(--color-border)",
-                            color: "var(--color-popover-foreground)",
-                          }),
-                          option: (base, state) => ({
-                            ...base,
-                            backgroundColor: state.isFocused ? "rgba(0,0,0,0.05)" : "transparent",
-                            color: "inherit",
-                            cursor: "pointer",
-                          }),
+                        value={categoryOptions.filter((o) => selectedCategoryIds.includes(o.value))}
+                        onChange={(vals) => {
+                          const ids = (vals as unknown as { value: string }[]).map((v) => v.value);
+                          setSelectedCategoryIds(ids);
+                          const validSubs = new Set(
+                            (categoryTree ?? [])
+                              .filter((c) => ids.includes(c.id))
+                              .flatMap((c) => c.children.map((s) => s.id)),
+                          );
+                          setSelectedSubIds((prev) => prev.filter((id) => validSubs.has(id)));
                         }}
+                        placeholder="Select categories..."
+                        styles={poiSelectStyles}
                       />
                     </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Sub-categories</Label>
+                    <ReactSelect
+                      isMulti
+                      classNamePrefix="select"
+                      options={subOptions}
+                      value={subOptions.filter((o) => selectedSubIds.includes(o.value))}
+                      onChange={(vals) =>
+                        setSelectedSubIds(
+                          (vals as unknown as { value: string }[]).map((v) => v.value),
+                        )
+                      }
+                      isDisabled={selectedCategoryIds.length === 0}
+                      placeholder={
+                        selectedCategoryIds.length === 0
+                          ? "Pick a category first"
+                          : "Select sub-categories..."
+                      }
+                      styles={poiSelectStyles}
+                    />
                   </div>
 
                   <div className="grid gap-2">
@@ -697,6 +750,25 @@ export function PoiDetailPage() {
                         onChange={(e) => setProductKeywords(e.target.value)}
                         placeholder="latte, espresso, muffins"
                       />
+                      {suggestedKeywords.length > 0 &&
+                        (() => {
+                          const current = new Set(fromCsv(productKeywords));
+                          const missing = suggestedKeywords.filter((k) => !current.has(k));
+                          if (missing.length === 0) return null;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setProductKeywords(
+                                  toCsv([...fromCsv(productKeywords), ...missing]),
+                                )
+                              }
+                              className="self-start rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/20"
+                            >
+                              + Add {missing.length} suggested from sub-categories
+                            </button>
+                          );
+                        })()}
                     </div>
                   </div>
 

@@ -1,5 +1,12 @@
 export type PoiType = "ROOM" | "LAB" | "TOILET" | "STAIRS" | "ELEVATOR" | "OTHER" | "STORE";
 
+/** A taxonomy node linked to a POI. parentId null => a top-level category. */
+export interface PoiCategoryRef {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
 export const POI_TYPES: PoiType[] = [
   "ROOM",
   "LAB",
@@ -26,7 +33,10 @@ export interface Poi {
   areaW: number | null;
   areaH: number | null;
   description: string | null;
+  /** Primary (single) category name — legacy display convenience. */
   category: string | null;
+  /** Full many-to-many taxonomy membership (categories + sub-categories). */
+  categories: PoiCategoryRef[];
   aliases: string[];
   productKeywords: string[];
   images?: string[];
@@ -54,7 +64,8 @@ export interface CreatePoiInput {
   areaW?: number | null;
   areaH?: number | null;
   description?: string;
-  category?: string;
+  /** Taxonomy node ids (categories AND sub-categories) to link. */
+  categoryIds?: string[];
   aliases?: string[];
   productKeywords?: string[];
   images?: string[];
@@ -75,7 +86,7 @@ export interface UpdatePoiInput {
   areaW?: number | null;
   areaH?: number | null;
   description?: string;
-  category?: string;
+  categoryIds?: string[];
   aliases?: string[];
   productKeywords?: string[];
   images?: string[];
