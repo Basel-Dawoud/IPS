@@ -68,6 +68,10 @@ phone.py → MQTT → Mosquitto → FastAPI
                           (WebSocket + REST, via FastAPI)
 ```
 
+
+<img width="1071" height="624" alt="image" src="https://github.com/user-attachments/assets/30395ab1-8a8d-478b-be33-3ac4de230e9e" />
+
+
 | Question | Answered from | Why |
 |---|---|---|
 | Where is everyone right now? | Redis, via `/ws/live` | Sub-millisecond reads, pushed the instant a position arrives |
