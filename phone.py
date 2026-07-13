@@ -81,6 +81,21 @@ STAIRS = {
     4: {"left": 77, "right": 395},
 }
 
+# ── Scenario mode (opt-in) ────────────────────────────────────────────────────
+# When SCENARIO is set (e.g. SCENARIO=corridor458), phone.py ignores the default
+# looping FloorNavigator route and instead runs a fixed, scripted set of users
+# defined in build_scenario_devices(). Leave empty for the original behavior.
+SCENARIO = os.getenv("SCENARIO", "").strip().lower()
+
+# Spawn anchor for the corridor458 scenario: the corridor cell in front of room
+# 458 ("Home Decor", floor 4 cols 147-180 -> center ~163). SCENARIO_START_ROW
+# defaults to the middle of floor 4's corridor band when unset. Each of the 3
+# users is offset by a few columns (SCENARIO_OFFSET_STEP) so their starting dots
+# don't perfectly overlap on the dashboard.
+SCENARIO_START_COL = int(os.getenv("SCENARIO_START_COL", "163"))
+SCENARIO_START_ROW = os.getenv("SCENARIO_START_ROW")  # optional int override
+SCENARIO_OFFSET_STEP = int(os.getenv("SCENARIO_OFFSET_STEP", "3"))
+
 # Movement controls
 POSITION_INTERVAL_SECONDS = float(os.getenv("POSITION_INTERVAL_SECONDS", "0.5"))
 STATUS_INTERVAL_SECONDS = float(os.getenv("STATUS_INTERVAL_SECONDS", "30"))
@@ -570,12 +585,137 @@ class FloorNavigator:
         self.last_step = None
         return self.current, True
 
+
+class ScriptedFloorNavigator:
+    """
+    Deterministic, NON-looping route driven by an ordered list of legs — used by
+    the opt-in SCENARIO mode. Exposes the same surface the rest of the code reads
+    off a navigator (`.floor_map`, `.current`, `.path`, `.advance()`), so a
+    SimulatedDevice can drive it interchangeably with FloorNavigator.
+
+    Each leg is one of:
+      ("goto", floor, side)        -> BFS to the nearest stair cell (`side`,
+                                      "left"/"right") on the current floor, reusing
+                                      FloorMap.nearest_stair_cell + shortest_path.
+      ("transition", floor, side)  -> hard floor swap to `floor`, arriving at that
+                                      floor's `side` stair cell — mirrors
+                                      FloorNavigator._transition_floor, including
+                                      the brief settle pause.
+
+    Once the final leg's target is reached the navigator becomes terminal:
+    advance() keeps returning the same cell with moved=False forever, so the
+    device publishes a stationary position and its dot stays on the dashboard
+    ("moves ... and stops there").
+    """
+
+    def __init__(
+        self,
+        floor_maps: dict[int, FloorMap],
+        start_floor: int,
+        start_cell: Cell,
+        legs: list[tuple],
+    ):
+        self.floor_maps = floor_maps
+        self.floor_map = floor_maps[start_floor]
+        self.current = self._snap_to_walkable(start_cell)
+        self.legs = list(legs)
+        self.leg_index = 0
+        self.path: list[Cell] = []
+        self.target: Cell | None = None
+        self.last_step: tuple[int, int] | None = None
+        self.pause_until = 0.0
+        self.done = False
+        self._begin_leg()
+
+    def _snap_to_walkable(self, seed: Cell) -> Cell:
+        if self.floor_map.is_walkable(seed.row, seed.col):
+            return seed
+        return min(
+            (Cell(int(r), int(c)) for r, c in self.floor_map.primary_cells),
+            key=lambda cell: abs(cell.row - seed.row) + abs(cell.col - seed.col),
+        )
+
+    def _do_transition(self, floor: int, side: str) -> None:
+        self.floor_map = self.floor_maps[floor]
+        self.current = self.floor_map.nearest_stair_cell(side, self.current)
+        self.pause_until = time.monotonic() + 0.6
+
+    def _begin_leg(self) -> None:
+        """
+        Plan the leg at self.leg_index. Transition legs (and already-satisfied
+        goto legs) are consumed inline until a walkable leg with a real path is
+        found, or the route runs out (-> terminal).
+        """
+        while self.leg_index < len(self.legs):
+            leg = self.legs[self.leg_index]
+            kind = leg[0]
+
+            if kind == "goto":
+                _, _floor, side = leg
+                self.target = self.floor_map.nearest_stair_cell(side, self.current)
+                self.path = self.floor_map.shortest_path(self.current, self.target)
+                if self.path:
+                    return
+                # Already at (or unreachable from) the target — nothing to walk.
+                self.leg_index += 1
+                continue
+
+            if kind == "transition":
+                _, floor, side = leg
+                self._do_transition(floor, side)
+                self.leg_index += 1
+                continue
+
+            # Unknown leg kind — skip defensively.
+            self.leg_index += 1
+
+        # No walkable legs remain.
+        self.path = []
+        self.target = None
+        self.done = True
+
+    def advance(self) -> tuple[Cell, bool]:
+        now = time.monotonic()
+
+        if self.done:
+            self.last_step = None
+            return self.current, False
+
+        if now < self.pause_until:
+            return self.current, False
+
+        if not self.path:
+            # Current leg finished — move on to the next one.
+            self.leg_index += 1
+            self._begin_leg()
+            if self.done:
+                return self.current, False
+            if now < self.pause_until:
+                # A transition just happened; honor its settle pause this tick.
+                return self.current, False
+
+        if self.path:
+            prev = self.current
+            self.current = self.path.pop(0)
+            self.last_step = (self.current.row - prev.row, self.current.col - prev.col)
+            return self.current, True
+
+        return self.current, False
+
+
 # ── MQTT-capable simulated device ─────────────────────────────────────────────
 class SimulatedDevice:
-    def __init__(self, device_id: str, floor_maps: dict[int, FloorMap]):
+    def __init__(
+        self,
+        device_id: str,
+        floor_maps: dict[int, FloorMap],
+        navigator: "FloorNavigator | ScriptedFloorNavigator | None" = None,
+    ):
         self.device_id = device_id
         self.floor_maps = floor_maps
-        self.navigator = FloorNavigator(floor_maps, start_floor=3)
+        # Scenario mode passes a pre-built ScriptedFloorNavigator; the default
+        # path keeps the original looping FloorNavigator.
+        self.navigator = navigator if navigator is not None else FloorNavigator(floor_maps, start_floor=3)
         self.battery = random.randint(55, 100)
         # Fractional cells-of-progress toward the next queued path cell,
         # carried across ticks — see step_position()'s docstring.
@@ -787,20 +927,76 @@ async def print_stats_periodically() -> None:
 
 
 # ── Session ───────────────────────────────────────────────────────────────────
-def build_devices(floor_maps: dict[int, FloorMap]) -> list[SimulatedDevice]:
-    device_ids = make_device_ids(NUM_DEVICES)
+def build_scenario_devices(floor_maps: dict[int, FloorMap]) -> list[SimulatedDevice]:
+    """
+    SCENARIO=corridor458: three users start in the floor-4 corridor in front of
+    room 458, then:
+      • user 1 walks right to the floor-4 right stairs and stops;
+      • users 2 & 3 walk left to the floor-4 left stairs, descend to floor 3,
+        walk right to the floor-3 right stairs, and stop.
+    """
+    for required in (3, 4):
+        if required not in floor_maps:
+            raise RuntimeError(
+                f"Scenario '{SCENARIO}' needs floor {required} loaded "
+                f"(set FLOORS=3,4)."
+            )
 
+    f4 = floor_maps[4]
+    if SCENARIO_START_ROW is not None:
+        start_row = int(SCENARIO_START_ROW)
+    elif f4.corridor_rows:
+        row_start, row_end = f4.corridor_rows
+        start_row = (row_start + row_end) // 2
+    else:
+        start_row = f4.rows // 2
+
+    # Route legs per user (see docstring). Users 2 & 3 share the same route.
+    right_route = [("goto", 4, "right")]
+    left_down_route = [
+        ("goto", 4, "left"),
+        ("transition", 3, "left"),
+        ("goto", 3, "right"),
+    ]
+    routes = [right_route, left_down_route, left_down_route]
+    offsets = [-SCENARIO_OFFSET_STEP, 0, SCENARIO_OFFSET_STEP]
+
+    # Random per-session device ids (same convention as the fleet path) — each is
+    # generated once here and stays with the user for the whole run.
+    device_ids = make_device_ids(len(routes))
+
+    devices: list[SimulatedDevice] = []
+    for device_id, offset, legs in zip(device_ids, offsets, routes):
+        start_cell = Cell(start_row, SCENARIO_START_COL + offset)
+        navigator = ScriptedFloorNavigator(
+            floor_maps, start_floor=4, start_cell=start_cell, legs=legs
+        )
+        devices.append(SimulatedDevice(device_id, floor_maps, navigator=navigator))
+    return devices
+
+
+def build_devices(floor_maps: dict[int, FloorMap]) -> list[SimulatedDevice]:
     if not floor_maps:
         raise RuntimeError("No available floors were loaded.")
 
+    if SCENARIO:
+        return build_scenario_devices(floor_maps)
+
+    device_ids = make_device_ids(NUM_DEVICES)
     return [SimulatedDevice(did, floor_maps) for did in device_ids]
 
 
 async def run_once(floor_maps: dict[int, FloorMap]) -> None:
     devices = build_devices(floor_maps)
 
-    if NUM_DEVICES == 1:
+    # Scenario mode always builds its own fixed fleet regardless of NUM_DEVICES,
+    # so treat it like the multi-device path (own client id + periodic stats).
+    single_device = (NUM_DEVICES == 1) and not SCENARIO
+
+    if single_device:
         client_identifier = devices[0].device_id
+    elif SCENARIO:
+        client_identifier = f"sim-scenario-{SCENARIO}-{uuid.uuid4().hex[:6]}"
     else:
         client_identifier = f"sim-fleet-{uuid.uuid4().hex[:8]}"
 
@@ -810,16 +1006,18 @@ async def run_once(floor_maps: dict[int, FloorMap]) -> None:
         identifier=client_identifier,
     ) as client:
         print(f"[CONN]   Connected to {MQTT_HOST}:{MQTT_PORT} as {client_identifier}")
+        if SCENARIO:
+            print(f"[SIM]    Scenario '{SCENARIO}': {len(devices)} scripted user(s)")
         print(
-            f"[SIM]    Simulating {NUM_DEVICES} device(s) on floors "
+            f"[SIM]    Simulating {len(devices)} device(s) on floors "
             f"{sorted({d.floor for d in devices})}"
         )
-        if NUM_DEVICES == 1:
+        if single_device:
             print(f"[SIM]    Device ID: {devices[0].device_id}")
 
         tasks = [asyncio.create_task(device.run(client), name=device.device_id) for device in devices]
         tasks.append(asyncio.create_task(listen_for_messages(client), name="listener"))
-        if NUM_DEVICES > 1:
+        if not single_device:
             tasks.append(asyncio.create_task(print_stats_periodically(), name="stats"))
 
         try:
