@@ -31,6 +31,20 @@ from text_utils import norm, phrase_matches, tokenize, singular
 
 EMBED_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+_WORD_RE = re.compile(r"[؀-ۿa-zA-Z0-9]+")
+
+
+def _word_variants(word: str) -> list[str]:
+    """A normalized word plus its Arabic definite-article ('ال') and sound-plural
+    ('ات') stripped forms, so a query like 'الهاردات' can meet a stored 'هارد'."""
+    out = [word]
+    if word.startswith("ال") and len(word) > 4:
+        word = word[2:]
+        out.append(word)
+    if word.endswith("ات") and len(word) > 4:
+        out.append(word[:-2])
+    return out
+
 _embedder = None
 _embedder_lock = threading.Lock()
 
@@ -90,6 +104,7 @@ class BuildingCatalog:
         self.keyword_index: dict[str, dict[str, float]] = {}
         self.full_names: list[tuple[str, str]] = []      # (lowercased phrase, poi_id)
         self.arabic_aliases: list[tuple[str, str]] = []  # (normalized alias, poi_id)
+        self.fuzzy_vocab: dict[str, set[str]] = {}       # normalized word variant -> poi_ids
 
         for p in self.pois:
             pid = p["id"]
@@ -108,6 +123,11 @@ class BuildingCatalog:
                 for tok in tokenize(raw):
                     self.keyword_index.setdefault(singular(tok), {}).setdefault(pid, 0.0)
                     self.keyword_index[singular(tok)][pid] += 1.0
+                for w in _WORD_RE.findall(norm(raw)):
+                    if len(w) < 3:
+                        continue
+                    for v in _word_variants(w):
+                        self.fuzzy_vocab.setdefault(v, set()).add(pid)
         # longest / most specific phrases first
         self.full_names.sort(key=lambda kv: -len(kv[0]))
 
@@ -147,6 +167,30 @@ class BuildingCatalog:
             best = max(scores.items(), key=lambda kv: kv[1])[0]
             return self.by_id.get(best)
         return None
+
+    def fuzzy_match(self, text: str, min_ratio: float = 0.72) -> dict | None:
+        """Typo/plural-tolerant retrieval fallback over the catalog's own
+        name/alias/keyword words (e.g. the typo 'هاراردت' still reaches the
+        stored 'هارد'). Query words must be 4+ chars and share a 2-char prefix
+        with a vocab word, so short Arabic words can't collide on ratio alone.
+        Used by the resolver as a LAST resort — never for intent pre-routing."""
+        scores: dict[str, float] = {}
+        for qw in _WORD_RE.findall(norm(text)):
+            for qv in _word_variants(qw):
+                if len(qv) < 4:
+                    continue
+                for vw, pids in self.fuzzy_vocab.items():
+                    if qv[:2] != vw[:2] or abs(len(qv) - len(vw)) > 3:
+                        continue
+                    r = 1.0 if qv == vw else difflib.SequenceMatcher(None, qv, vw).ratio()
+                    if r < min_ratio:
+                        continue
+                    for pid in pids:
+                        scores[pid] = max(scores.get(pid, 0.0), r)
+        if not scores:
+            return None
+        best = max(scores.items(), key=lambda kv: kv[1])[0]
+        return self.by_id.get(best)
 
     # -- semantic RAG -----------------------------------------------------------
     def _ensure_embeddings(self):

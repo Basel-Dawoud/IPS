@@ -92,6 +92,45 @@ CRITICAL:
 - Keep "reply" empty for product_query and navigate_confirm_*.
 """
 
+EXTRACT_ITEM_PROMPT = """A shopper sent this message to a mall assistant: "{message}"
+
+Does the message name a specific product, product category, brand, or item to buy — even if misspelled (e.g. "هاراردت" is a typo of "هاردات" = hard drives, "موبيل" = mobile phone)? Generic words like "something nice", "a good thing", "حاجة حلوة" do NOT count as an item.
+
+Output ONLY JSON: {{"item": "<canonical English noun phrase for the item>"}} or {{"item": null}}
+"""
+
+
+def llm_extract_item(message: str) -> str | None:
+    """Focused extraction call: the 3B rarely fills search_query inside the big
+    intent prompt (verified in logs), but answers this single question well."""
+    data = llm.chat_json("You extract shopping targets. Output only JSON.",
+                         EXTRACT_ITEM_PROMPT.format(message=message), max_tokens=30)
+    if isinstance(data, dict):
+        item = data.get("item")
+        if isinstance(item, str) and item.strip() and item.strip().lower() not in ("null", "none"):
+            return item.strip()
+    return None
+
+
+SATISFIABLE_PROMPT = """A shopper in a mall that sells ONLY electronics, furniture, and household products said: "{message}"
+
+Question: can this request be satisfied by recommending products from THIS mall? Answer false if the shopper wants something this mall does not sell (like a car, food, clothes, a person). Answer true if they want electronics/furniture/household or just "anything nice".
+
+Reply ONLY: {{"satisfiable": true}} or {{"satisfiable": false}}"""
+
+
+def llm_recommend_satisfiable(message: str) -> bool:
+    """Binary guard for generic-looking recommendation requests: False when the
+    shopper wants something the mall doesn't sell (so the caller answers
+    out-of-scope instead of dumping building-wide top picks). Defaults to True
+    on any LLM failure so the recommendation feature never breaks."""
+    data = llm.chat_json("You judge mall requests. Output only JSON.",
+                         SATISFIABLE_PROMPT.format(message=message), max_tokens=20)
+    if isinstance(data, dict) and "satisfiable" in data:
+        return bool(data["satisfiable"])
+    return True
+
+
 VERIFY_PROMPT = """You are verifying whether a shopper's request belongs to a store.
 
 Request: "{query}"
@@ -166,9 +205,20 @@ def mall_info(user_text: str, catalog: BuildingCatalog, lang: str) -> str:
 
 # --- POI resolution --------------------------------------------------------
 
+def _fuzzy_fallback(catalog: BuildingCatalog, query: str, raw_text: str):
+    """Last-resort typo/plural-tolerant lookup once alias + RAG both failed."""
+    poi = catalog.fuzzy_match(query)
+    if not poi and raw_text != query:
+        poi = catalog.fuzzy_match(raw_text)
+    if poi:
+        logger.info(f"  [RESOLVE_POI] FUZZY fallback hit -> {poi.get('name')} (id={poi.get('id')})")
+        return poi, CONFIDENT_MATCH_THRESHOLD
+    return None, 0.0
+
+
 def resolve_poi(catalog: BuildingCatalog, search_query: str | None, raw_text: str):
     """Return (poi, confidence) or (None, 0). Deterministic alias fast-path
-    first, then RAG + LLM verify."""
+    first, then RAG + LLM verify, then a fuzzy typo-tolerant last resort."""
     logger.info(f"  [RESOLVE_POI] search_query={search_query!r}  raw_text={raw_text!r}")
     direct = None
     if search_query:
@@ -186,22 +236,22 @@ def resolve_poi(catalog: BuildingCatalog, search_query: str | None, raw_text: st
     hits = catalog.search(query, top_k=3, min_score=BORDERLINE_MATCH_THRESHOLD)
     logger.info(f"  [RESOLVE_POI] RAG hits: {[(h[0].get('name'), round(h[1],3)) for h in hits]}")
     if not hits:
-        logger.info("  [RESOLVE_POI] No RAG hits above threshold -> returning None")
-        return None, 0.0
+        logger.info("  [RESOLVE_POI] No RAG hits above threshold -> trying fuzzy fallback")
+        return _fuzzy_fallback(catalog, query, raw_text)
     poi, score = hits[0]
     examples = (poi.get("productKeywords") or []) + (poi.get("aliases") or [])
     logger.info(f"  [RESOLVE_POI] Top hit: {poi.get('name')} score={score:.3f}  examples={examples[:6]}")
     verified = llm_verify_match(query, poi, examples)
     logger.info(f"  [RESOLVE_POI] LLM verify result: {verified}")
     if verified is False:
-        logger.info("  [RESOLVE_POI] LLM said NO match -> returning None")
-        return None, 0.0
+        logger.info("  [RESOLVE_POI] LLM said NO match -> trying fuzzy fallback")
+        return _fuzzy_fallback(catalog, query, raw_text)
     if score < CONFIDENT_MATCH_THRESHOLD and verified is not True:
-        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < CONFIDENT ({CONFIDENT_MATCH_THRESHOLD}) and verifier not True -> returning None")
-        return None, 0.0
+        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < CONFIDENT ({CONFIDENT_MATCH_THRESHOLD}) and verifier not True -> trying fuzzy fallback")
+        return _fuzzy_fallback(catalog, query, raw_text)
     if verified is None and score < STRONG_MATCH_THRESHOLD:
-        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < STRONG ({STRONG_MATCH_THRESHOLD}) and verifier inconclusive -> returning None")
-        return None, 0.0
+        logger.info(f"  [RESOLVE_POI] Score {score:.3f} < STRONG ({STRONG_MATCH_THRESHOLD}) and verifier inconclusive -> trying fuzzy fallback")
+        return _fuzzy_fallback(catalog, query, raw_text)
     logger.info(f"  [RESOLVE_POI] ACCEPTED -> {poi.get('name')} (id={poi.get('id')}) score={score:.3f}")
     return poi, score
 
@@ -322,8 +372,15 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
         understanding = {"intent": intent, "search_query": None, "reply": ""}
         logger.info(f"  [PRE-ROUTE] -> confirmation path: {intent}")
     elif looks_like_recommend_query(message):
-        understanding = {"intent": "recommend", "search_query": None, "reply": ""}
-        logger.info("  [PRE-ROUTE] -> recommend path")
+        # Force the intent (the 3B misreads it with a pending offer in context)
+        # but still let the LLM extract WHAT was asked for: "رشحلي هاردات" must
+        # keep its product, only "رشحلي حاجة حلوة" is truly generic. The LLM's
+        # out_of_scope verdict is respected — "رشحلي عربية" (a car) must get the
+        # out-of-scope reply, not building-wide product picks.
+        understanding = llm_understand(message, lang, pending=awaiting)
+        if understanding.get("intent") != "out_of_scope":
+            understanding["intent"] = "recommend"
+        logger.info(f"  [PRE-ROUTE] -> recommend path (LLM intent={understanding.get('intent')!r} search_query={understanding.get('search_query')!r})")
     elif direct_poi:
         understanding = {
             "intent": "list_query" if looks_like_list_query(message) else "product_query",
@@ -379,16 +436,38 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
         # Resolve which store/category the recommendation targets. A confident
         # match (e.g. "recommend a good phone" -> phones) recommends within that
         # store; otherwise recommend top-rated products building-wide.
-        poi, conf = resolve_poi(catalog, understanding.get("search_query"), message)
+        search_query = understanding.get("search_query")
+        if not search_query:
+            search_query = llm_extract_item(message)
+            logger.info(f"  [BRANCH] recommend -> extracted item: {search_query!r}")
+        poi, conf = resolve_poi(catalog, search_query, message)
         target_poi = poi if conf >= CONFIDENT_MATCH_THRESHOLD else None
+        if target_poi is None and search_query:
+            # The user asked for a specific thing and we couldn't find it — say
+            # so, instead of dumping building-wide top picks for it.
+            logger.info("  [BRANCH] recommend -> specific item unresolved -> NOT_FOUND")
+            return out(_NOT_FOUND[lang])
+        if target_poi is None and not llm_recommend_satisfiable(message):
+            # Looks generic to the extractor, but the LLM judges the request
+            # unservable by this mall (e.g. "رشحلي عصير" wants juice) — answer
+            # out-of-scope instead of dumping building-wide top picks.
+            logger.info("  [BRANCH] recommend -> not satisfiable by mall -> OUT_OF_SCOPE")
+            return out(random.choice(_OUT_OF_SCOPE[lang]))
         rec = products.recommend(building_id, products_version, target_poi, lang,
-                                 query=understanding.get("search_query") or message,
+                                 query=search_query or message,
                                  interests=interests)
         if rec:
             reply, top_poi_id, floor = rec
             action = ({"type": "suggest", "poiId": top_poi_id, "floorLevel": floor}
                       if top_poi_id else None)
             return out(reply, action)
+        if target_poi is not None:
+            # Products unavailable but the store DID resolve — suggest it
+            # instead of handing off to the history-based store engine (which
+            # would recommend unrelated stores for "recommend me a phone").
+            return out(_suggest_reply(target_poi, lang),
+                       {"type": "suggest", "poiId": target_poi["id"],
+                        "floorLevel": _floor(target_poi)})
         return out("", handoff="recommend")
 
     # 3. List query -> list product types/brands in the matched store, offer to navigate.
